@@ -31,14 +31,18 @@ async function findContactByPhone(phone: string): Promise<string | null> {
   return token;
 }
 
-async function registerVisitor(name: string, phone: string, token: string): Promise<string> {
+async function registerVisitor(name: string | undefined, phone: string, token: string): Promise<string> {
   const base = process.env.ROCKETCHAT_URL;
   const res = await fetch(`${base}/api/v1/livechat/visitor`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       visitor: {
-        name,
+        // Omit `name` entirely when re-registering a known phone — RC keeps the
+        // stored value untouched. Passing it would let anyone silently rename
+        // (and thereby appear to "become") an existing contact just by using a
+        // different `nome` in the URL for a phone that's already on record.
+        ...(name ? { name } : {}),
         token,
         phone, // native field — required for omnichannel/contact.search to find this visitor later
         department: SAPIOS_DEPT_ID,
@@ -82,8 +86,10 @@ router.post('/register', async (req: Request, res: Response) => {
     const tokenToUse = existingToken ?? randomBytes(17).toString('hex');
     console.log(`[visitors] ${existingToken ? 'existing' : 'new'} visitor token=${tokenToUse.slice(0, 12)}...`);
 
-    // 2. Register/update visitor in RC (idempotent — RC upserts by token)
-    const confirmedToken = await registerVisitor(name, cleanPhone, tokenToUse);
+    // 2. Register/update visitor in RC (idempotent — RC upserts by token).
+    // Only set the name for a genuinely new phone; a returning visitor keeps
+    // whatever name RC already has on file (see registerVisitor for why).
+    const confirmedToken = await registerVisitor(existingToken ? undefined : name, cleanPhone, tokenToUse);
 
     // 4. Open (or reopen) the livechat room in Sapios dept
     const roomId = await openRoom(confirmedToken);
