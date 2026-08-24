@@ -27,6 +27,32 @@ interface RCWebhookPayload {
   };
 }
 
+const DEFAULT_GREETING = 'Oi, sou da Sapios, como posso te ajudar?';
+
+// Sends a standard opening message as the agent, right when a chat is taken —
+// so every visitor gets a consistent first response instead of dead air
+// while whoever picked up the chat gets around to typing.
+async function sendGreeting(roomId: string): Promise<void> {
+  const msg = process.env.LIVECHAT_GREETING_MESSAGE ?? DEFAULT_GREETING;
+  if (!msg) return; // set LIVECHAT_GREETING_MESSAGE="" to disable
+  const base = process.env.ROCKETCHAT_URL;
+  try {
+    const res = await fetch(`${base}/api/v1/chat.sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Auth-Token': process.env.ROCKETCHAT_ADMIN_TOKEN ?? '',
+        'X-User-Id': process.env.ROCKETCHAT_ADMIN_USER_ID ?? '',
+      },
+      body: JSON.stringify({ message: { rid: roomId, msg } }),
+    });
+    const body = await res.json() as { success?: boolean; error?: string };
+    if (!body.success) console.warn(`[webhook] greeting rejected for roomId=${roomId}:`, body.error);
+  } catch (err) {
+    console.error('[webhook] greeting error:', err);
+  }
+}
+
 // Dedup: remember recently processed event IDs to handle RC retries
 const processedEvents = new Set<string>();
 const EVENT_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -75,6 +101,7 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
       // Adding &room= was causing "Invalid token" on the livechat page.
       const agentUrl = `${livechatBaseUrl}?token=${encodeURIComponent(visitorToken)}`;
       queueState.markConnected(roomId, visitorToken, agentUrl);
+      sendGreeting(roomId).catch(() => {});
       break;
     }
 

@@ -52,8 +52,9 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
   }, [roomId, visitorToken]);
 
   const mergeMessages = useCallback((incoming: RcMessage[]) => {
-    // Filter out system messages (t field = event type like 'uj', 'ul', etc.)
-    const valid = incoming.filter(m => !m.t || m.msg);
+    // Filter out system messages (t field = event type, e.g. 'uj', 'command'/"connected",
+    // 'livechat-close'/"Closed by visitor" — these carry real text but aren't chat content)
+    const valid = incoming.filter(m => !m.t);
     if (!valid.length) return;
     // RC returns newest-first; sort chronologically
     const sorted = [...valid].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
@@ -86,7 +87,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
       .then(res => res.ok ? res.json() : null)
       .then((body: { messages?: RcMessage[] } | null) => {
         const raw = body?.messages ?? [];
-        const valid = raw.filter(m => !m.t || m.msg);
+        const valid = raw.filter(m => !m.t);
         const sorted = [...valid].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
         setPastMessages(sorted);
       })
