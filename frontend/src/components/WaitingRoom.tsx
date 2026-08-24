@@ -38,6 +38,7 @@ export default function WaitingRoom() {
   const params = new URLSearchParams(window.location.search);
   const visitorToken = params.get('token');
   const visitorName = params.get('nome') ?? params.get('name') ?? undefined;
+  const visitorPhone = params.get('tel') ?? params.get('phone') ?? undefined;
   // roomId may come from URL (set by EntryPage) or from the SSE connected event
   const urlRoomId = params.get('room') ?? null;
 
@@ -102,6 +103,7 @@ export default function WaitingRoom() {
         visitorToken={visitorToken}
         roomId={chatRoomId}
         visitorName={visitorName}
+        visitorPhone={visitorPhone}
         rcUrl={RC_URL}
       />
     );

@@ -21,18 +21,20 @@ interface Props {
   visitorToken: string;
   roomId: string;
   visitorName?: string;
+  visitorPhone?: string;
   rcUrl: string;
 }
 
 const POLL_MS = 2500;
 
-export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: Props) {
+export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPhone, rcUrl }: Props) {
   const [messages, setMessages] = useState<RcMessage[]>([]);
   const [pastMessages, setPastMessages] = useState<RcMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [roomClosed, setRoomClosed] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const lastTsRef = useRef<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -115,6 +117,11 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: visitorToken, roomId, msg }),
       });
+      if (res.status === 409) {
+        const body = await res.json() as { error?: string };
+        if (body.error === 'room-closed') { setRoomClosed(true); return; }
+        throw new Error();
+      }
       if (!res.ok) throw new Error();
     } catch {
       setError('Erro ao enviar mensagem. Tente novamente.');
@@ -133,6 +140,11 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
         method: 'POST',
         body: form,
       });
+      if (res.status === 409) {
+        const body = await res.json() as { error?: string };
+        if (body.error === 'room-closed') { setRoomClosed(true); return; }
+        throw new Error();
+      }
       if (!res.ok) throw new Error();
     } catch {
       setError('Erro ao enviar arquivo.');
@@ -216,9 +228,30 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
       </div>
 
       {/* Error bar */}
-      {error && (
+      {error && !roomClosed && (
         <div style={S.errorBar} onClick={() => setError(null)}>
           ⚠️ {error} <span style={{ opacity: 0.6, fontSize: '0.75rem' }}>(toque para fechar)</span>
+        </div>
+      )}
+
+      {/* Sala encerrada — bloqueia o envio e oferece iniciar um novo atendimento */}
+      {roomClosed && (
+        <div style={S.closedBar}>
+          <span>Esta conversa foi encerrada pelo atendente.</span>
+          <button
+            type="button"
+            style={S.reloadBtn}
+            onClick={() => {
+              if (visitorName && visitorPhone) {
+                const params = new URLSearchParams({ nome: visitorName, tel: visitorPhone });
+                window.location.href = `/entrar?${params.toString()}`;
+              } else {
+                window.location.reload();
+              }
+            }}
+          >
+            Iniciar novo atendimento
+          </button>
         </div>
       )}
 
@@ -240,7 +273,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
           onClick={() => fileRef.current?.click()}
           style={S.iconBtn}
           title="Anexar arquivo"
-          disabled={uploading}
+          disabled={uploading || roomClosed}
         >
           {uploading ? '⏳' : '📎'}
         </button>
@@ -248,8 +281,8 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
           style={S.textInput}
           value={text}
           onChange={e => setText(e.target.value)}
-          placeholder="Digite uma mensagem..."
-          disabled={sending}
+          placeholder={roomClosed ? 'Conversa encerrada' : 'Digite uma mensagem...'}
+          disabled={sending || roomClosed}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -259,8 +292,8 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
         />
         <button
           type="submit"
-          style={{ ...S.iconBtn, ...S.sendBtn, opacity: sending || !text.trim() ? 0.5 : 1 }}
-          disabled={sending || !text.trim()}
+          style={{ ...S.iconBtn, ...S.sendBtn, opacity: sending || !text.trim() || roomClosed ? 0.5 : 1 }}
+          disabled={sending || !text.trim() || roomClosed}
         >
           ➤
         </button>
@@ -352,6 +385,17 @@ const S: Record<string, React.CSSProperties> = {
     background: '#fee2e2', color: '#b91c1c',
     padding: '0.5rem 1rem', fontSize: '0.85rem',
     textAlign: 'center', cursor: 'pointer', flexShrink: 0,
+  },
+  closedBar: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem',
+    background: '#FEF3C7', color: '#92400e',
+    padding: '0.75rem 1rem', fontSize: '0.85rem',
+    textAlign: 'center', flexShrink: 0,
+  },
+  reloadBtn: {
+    background: '#075E54', color: '#fff', border: 'none',
+    padding: '0.4rem 1rem', borderRadius: 999, fontSize: '0.8rem',
+    fontWeight: 600, cursor: 'pointer',
   },
   inputRow: {
     display: 'flex', alignItems: 'center', gap: '0.5rem',

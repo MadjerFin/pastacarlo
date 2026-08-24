@@ -38,6 +38,7 @@ export default function EntryPage() {
       const params = new URLSearchParams({ token: data.token });
       if (data.roomId) params.set('room', data.roomId);
       if (name) params.set('nome', name);
+      if (phone) params.set('tel', phone);
       window.location.href = `/?${params.toString()}`;
     } catch {
       setErrorMsg('Erro de conexão. Tente novamente.');

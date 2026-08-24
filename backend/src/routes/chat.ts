@@ -90,7 +90,13 @@ router.post('/message', async (req: Request, res: Response) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token, rid: roomId, msg }),
     });
-    const body = await upstream.json();
+    const body = await upstream.json() as { success?: boolean; error?: string };
+    // RC responds 200 even on failure (e.g. room already closed) — surface that as a real error
+    if (!body.success) {
+      console.warn(`[chat] sendMessage rejected by RC: roomId=${roomId} error=${body.error}`);
+      res.status(409).json(body);
+      return;
+    }
     res.json(body);
   } catch (err) {
     console.error('[chat] sendMessage error:', err);
@@ -118,7 +124,12 @@ router.post('/upload/:roomId', upload.single('file'), async (req: Request, res: 
       headers: { 'x-visitor-token': token },
       body: form,
     });
-    const body = await upstream.json();
+    const body = await upstream.json() as { success?: boolean; error?: string };
+    if (!body.success) {
+      console.warn(`[chat] upload rejected by RC: roomId=${roomId} error=${body.error}`);
+      res.status(409).json(body);
+      return;
+    }
     res.json(body);
   } catch (err) {
     console.error('[chat] upload error:', err);
