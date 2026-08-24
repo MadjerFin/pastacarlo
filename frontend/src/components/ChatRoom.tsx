@@ -10,6 +10,7 @@ interface RcMessage {
     title?: string;
     title_link?: string;
     image_url?: string;
+    audio_url?: string;
     type?: string;
     description?: string;
   }>;
@@ -36,10 +37,18 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
   const [error, setError] = useState<string | null>(null);
   const [roomClosed, setRoomClosed] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
   const lastTsRef = useRef<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const textInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sendOnStopRef = useRef(true);
 
   const scrollToBottom = () => setTimeout(() => endRef.current?.scrollIntoView({ behavior: 'smooth' }), 60);
 
@@ -130,6 +139,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
       setText(msg);
     } finally {
       setSending(false);
+      textInputRef.current?.focus();
     }
   }
 
@@ -154,6 +164,57 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
       setUploading(false);
     }
   }
+
+  function extFor(mimeType: string) {
+    if (mimeType.includes('mp4')) return 'm4a';
+    if (mimeType.includes('ogg')) return 'ogg';
+    return 'webm';
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+        .find(t => MediaRecorder.isTypeSupported(t));
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        if (sendOnStopRef.current && audioChunksRef.current.length) {
+          const type = recorder.mimeType || 'audio/webm';
+          const blob = new Blob(audioChunksRef.current, { type });
+          const file = new File([blob], `audio-message.${extFor(type)}`, { type });
+          uploadFile(file);
+        }
+        audioChunksRef.current = [];
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+      setRecordSeconds(0);
+      recordTimerRef.current = setInterval(() => setRecordSeconds(s => s + 1), 1000);
+    } catch {
+      setError('Não foi possível acessar o microfone.');
+    }
+  }
+
+  function stopRecording(shouldSend: boolean) {
+    sendOnStopRef.current = shouldSend;
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current = null;
+    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+    setRecording(false);
+    setRecordSeconds(0);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      streamRef.current?.getTracks().forEach(t => t.stop());
+    };
+  }, []);
 
   async function closeConversation() {
     if (!window.confirm('Tem certeza que deseja encerrar esta conversa?')) return;
@@ -230,10 +291,13 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
                   {msg.msg && <p style={S.msgText}>{msg.msg}</p>}
                   {msg.attachments?.map((att, ai) => {
                     const imgSrc = buildAttachUrl(att.image_url);
+                    const audioSrc = buildAttachUrl(att.audio_url);
                     const fileSrc = buildAttachUrl(att.title_link);
                     return (
                       <div key={ai} style={S.attach}>
-                        {imgSrc ? (
+                        {audioSrc ? (
+                          <audio controls src={audioSrc} style={S.attachAudio} />
+                        ) : imgSrc ? (
                           <img src={imgSrc} alt={att.title ?? 'imagem'} style={S.attachImg} />
                         ) : fileSrc ? (
                           <a href={fileSrc} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
@@ -287,50 +351,84 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
       )}
 
       {/* Input */}
-      <form onSubmit={send} style={S.inputRow}>
-        <input
-          type="file"
-          ref={fileRef}
-          style={{ display: 'none' }}
-          accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx"
-          onChange={e => {
-            const f = e.target.files?.[0];
-            if (f) uploadFile(f);
-            e.target.value = '';
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          style={S.iconBtn}
-          title="Anexar arquivo"
-          disabled={uploading || roomClosed}
-        >
-          {uploading ? '⏳' : '📎'}
-        </button>
-        <input
-          style={S.textInput}
-          value={text}
-          onChange={e => setText(e.target.value)}
-          placeholder={roomClosed ? 'Conversa encerrada' : 'Digite uma mensagem...'}
-          disabled={sending || roomClosed}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              send(e as unknown as React.FormEvent);
-            }
-          }}
-        />
-        <button
-          type="submit"
-          style={{ ...S.iconBtn, ...S.sendBtn, opacity: sending || !text.trim() || roomClosed ? 0.5 : 1 }}
-          disabled={sending || !text.trim() || roomClosed}
-        >
-          ➤
-        </button>
-      </form>
+      {recording ? (
+        <div style={S.inputRow}>
+          <button type="button" onClick={() => stopRecording(false)} style={S.iconBtn} title="Cancelar gravação">
+            🗑️
+          </button>
+          <div style={S.recordIndicator}>
+            <span style={S.recordDot} />
+            <span>Gravando... {fmtDuration(recordSeconds)}</span>
+          </div>
+          <button type="button" onClick={() => stopRecording(true)} style={{ ...S.iconBtn, ...S.sendBtn }} title="Enviar áudio">
+            ➤
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={send} style={S.inputRow}>
+          <input
+            type="file"
+            ref={fileRef}
+            style={{ display: 'none' }}
+            accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx"
+            onChange={e => {
+              const f = e.target.files?.[0];
+              if (f) uploadFile(f);
+              e.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            style={S.iconBtn}
+            title="Anexar arquivo"
+            disabled={uploading || roomClosed}
+          >
+            {uploading ? '⏳' : '📎'}
+          </button>
+          <input
+            ref={textInputRef}
+            style={S.textInput}
+            value={text}
+            onChange={e => setText(e.target.value)}
+            placeholder={roomClosed ? 'Conversa encerrada' : 'Digite uma mensagem...'}
+            disabled={roomClosed}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                send(e as unknown as React.FormEvent);
+              }
+            }}
+          />
+          {text.trim() ? (
+            <button
+              type="submit"
+              style={{ ...S.iconBtn, ...S.sendBtn, opacity: sending || roomClosed ? 0.5 : 1 }}
+              disabled={sending || roomClosed}
+            >
+              ➤
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={startRecording}
+              style={{ ...S.iconBtn, ...S.sendBtn, opacity: roomClosed ? 0.5 : 1 }}
+              disabled={roomClosed}
+              title="Gravar áudio"
+            >
+              🎤
+            </button>
+          )}
+        </form>
+      )}
     </div>
   );
+}
+
+function fmtDuration(totalSeconds: number) {
+  const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+  const s = (totalSeconds % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
 }
 
 function fmtTime(ts: string) {
@@ -413,6 +511,15 @@ const S: Record<string, React.CSSProperties> = {
   msgText: { margin: 0, whiteSpace: 'pre-wrap' },
   attach: { marginTop: '0.4rem' },
   attachImg: { maxWidth: 220, borderRadius: 8, display: 'block', marginTop: '0.25rem' },
+  attachAudio: { maxWidth: 240, width: '100%', display: 'block', marginTop: '0.25rem', height: 36 },
+  recordIndicator: {
+    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
+    color: '#54656f', fontSize: '0.9rem',
+  },
+  recordDot: {
+    width: 10, height: 10, borderRadius: '50%', background: '#e53935',
+    animation: 'blink 1s ease-in-out infinite',
+  },
   attachDesc: { fontSize: '0.78rem', margin: '0.2rem 0 0', opacity: 0.75 },
   metaRow: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.25rem', marginTop: '0.15rem' },
   ts: { fontSize: '0.65rem', opacity: 0.55 },
