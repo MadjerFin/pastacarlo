@@ -5,6 +5,54 @@ const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
 const RC = () => process.env.ROCKETCHAT_URL ?? '';
+const rcAuthHeaders = () => ({
+  'X-Auth-Token': process.env.ROCKETCHAT_ADMIN_TOKEN ?? '',
+  'X-User-Id': process.env.ROCKETCHAT_ADMIN_USER_ID ?? '',
+});
+
+// GET /chat/history/:visitorToken?currentRoomId=ROOM_ID
+// Returns messages from the visitor's past (already closed) rooms, so a
+// returning visitor sees earlier conversations alongside the new one.
+router.get('/history/:visitorToken', async (req: Request, res: Response) => {
+  const { visitorToken } = req.params;
+  const currentRoomId = req.query.currentRoomId as string | undefined;
+
+  try {
+    const visitorRes = await fetch(`${RC()}/api/v1/livechat/visitor/${encodeURIComponent(visitorToken)}`, {
+      headers: rcAuthHeaders(),
+    });
+    const visitorBody = await visitorRes.json() as {
+      visitor?: { _id?: string; lastChat?: { _id?: string } };
+    };
+    const visitorId = visitorBody.visitor?._id;
+    const lookupRoomId = currentRoomId ?? visitorBody.visitor?.lastChat?._id;
+    if (!visitorId || !lookupRoomId) { res.json({ ok: true, messages: [] }); return; }
+
+    const histRes = await fetch(
+      `${RC()}/api/v1/livechat/visitors.chatHistory/room/${lookupRoomId}/visitor/${visitorId}`,
+      { headers: rcAuthHeaders() },
+    );
+    const histBody = await histRes.json() as {
+      history?: Array<{ _id: string; closedAt?: string; ts: string }>;
+      success?: boolean;
+    };
+    const pastRooms = (histBody.history ?? []).filter((room) => room._id !== currentRoomId);
+
+    const messageLists = await Promise.all(pastRooms.map(async (room) => {
+      const msgUrl = new URL(`${RC()}/api/v1/livechat/messages.history/${room._id}`);
+      msgUrl.searchParams.set('token', visitorToken);
+      msgUrl.searchParams.set('limit', '100');
+      const msgRes = await fetch(msgUrl.toString());
+      const msgBody = await msgRes.json() as { messages?: unknown[] };
+      return msgBody.messages ?? [];
+    }));
+
+    res.json({ ok: true, messages: messageLists.flat() });
+  } catch (err) {
+    console.error('[chat] history error:', err);
+    res.status(502).json({ ok: false, error: 'upstream error' });
+  }
+});
 
 // GET /chat/messages/:roomId?token=TOKEN&since=ISO_DATE
 router.get('/messages/:roomId', async (req: Request, res: Response) => {

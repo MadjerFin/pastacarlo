@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 interface RcMessage {
   _id: string;
@@ -28,6 +28,7 @@ const POLL_MS = 2500;
 
 export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: Props) {
   const [messages, setMessages] = useState<RcMessage[]>([]);
+  const [pastMessages, setPastMessages] = useState<RcMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -74,6 +75,33 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
 
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchMessages, mergeMessages]);
+
+  useEffect(() => {
+    // Load messages from the visitor's earlier (already closed) conversations
+    const url = `/chat/history/${encodeURIComponent(visitorToken)}?currentRoomId=${encodeURIComponent(roomId)}`;
+    fetch(url)
+      .then(res => res.ok ? res.json() : null)
+      .then((body: { messages?: RcMessage[] } | null) => {
+        const raw = body?.messages ?? [];
+        const valid = raw.filter(m => !m.t || m.msg);
+        const sorted = [...valid].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+        setPastMessages(sorted);
+      })
+      .catch(console.error);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Full timeline: past (closed) conversations followed by the live one, deduped by id
+  const timeline = useMemo(() => {
+    const seen = new Set<string>();
+    const all: RcMessage[] = [];
+    for (const m of [...pastMessages, ...messages]) {
+      if (seen.has(m._id)) continue;
+      seen.add(m._id);
+      all.push(m);
+    }
+    return all;
+  }, [pastMessages, messages]);
 
   async function send(e: React.FormEvent) {
     e.preventDefault();
@@ -137,37 +165,49 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
 
       {/* Messages */}
       <div style={S.messageList}>
-        {messages.length === 0 && (
+        {timeline.length === 0 && (
           <p style={S.empty}>Conectado! Aguarde uma mensagem do agente.</p>
         )}
-        {messages.map(msg => {
+        {timeline.map((msg, i) => {
           const mine = isFromVisitor(msg);
+          const prev = timeline[i - 1];
+          const showDivider = !prev || dayKey(prev.ts) !== dayKey(msg.ts);
           return (
-            <div key={msg._id} style={{ ...S.row, justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-              <div style={{ ...S.bubble, ...(mine ? S.bubbleMe : S.bubbleAgent) }}>
-                {!mine && (
-                  <div style={S.senderName}>{msg.u.name ?? msg.u.username}</div>
-                )}
-                {msg.msg && <p style={S.msgText}>{msg.msg}</p>}
-                {msg.attachments?.map((att, i) => {
-                  const imgSrc = buildAttachUrl(att.image_url);
-                  const fileSrc = buildAttachUrl(att.title_link);
-                  return (
-                    <div key={i} style={S.attach}>
-                      {imgSrc ? (
-                        <img src={imgSrc} alt={att.title ?? 'imagem'} style={S.attachImg} />
-                      ) : fileSrc ? (
-                        <a href={fileSrc} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
-                          📎 {att.title ?? 'Arquivo'}
-                        </a>
-                      ) : null}
-                      {att.description && (
-                        <p style={S.attachDesc}>{att.description}</p>
-                      )}
-                    </div>
-                  );
-                })}
-                <div style={S.ts}>{fmtTime(msg.ts)}</div>
+            <div key={msg._id}>
+              {showDivider && (
+                <div style={S.dividerRow}>
+                  <span style={S.dividerPill}>{dayLabel(msg.ts)}</span>
+                </div>
+              )}
+              <div style={{ ...S.row, justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+                <div style={{ ...S.bubble, ...(mine ? S.bubbleMe : S.bubbleAgent) }}>
+                  {!mine && (
+                    <div style={S.senderName}>{msg.u.name ?? msg.u.username}</div>
+                  )}
+                  {msg.msg && <p style={S.msgText}>{msg.msg}</p>}
+                  {msg.attachments?.map((att, ai) => {
+                    const imgSrc = buildAttachUrl(att.image_url);
+                    const fileSrc = buildAttachUrl(att.title_link);
+                    return (
+                      <div key={ai} style={S.attach}>
+                        {imgSrc ? (
+                          <img src={imgSrc} alt={att.title ?? 'imagem'} style={S.attachImg} />
+                        ) : fileSrc ? (
+                          <a href={fileSrc} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
+                            📎 {att.title ?? 'Arquivo'}
+                          </a>
+                        ) : null}
+                        {att.description && (
+                          <p style={S.attachDesc}>{att.description}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div style={S.metaRow}>
+                    <span style={S.ts}>{fmtTime(msg.ts)}</span>
+                    {mine && <span style={S.check}>✓✓</span>}
+                  </div>
+                </div>
               </div>
             </div>
           );
@@ -233,50 +273,81 @@ function fmtTime(ts: string) {
   return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
+function dayKey(ts: string) {
+  return new Date(ts).toDateString();
+}
+
+function dayLabel(ts: string) {
+  const date = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (dayKey(ts) === dayKey(today.toISOString())) return 'Hoje';
+  if (dayKey(ts) === dayKey(yesterday.toISOString())) return 'Ontem';
+  const sameYear = date.getFullYear() === today.getFullYear();
+  return date.toLocaleDateString('pt-BR', {
+    day: '2-digit', month: 'long', year: sameYear ? undefined : 'numeric',
+  });
+}
+
+// Textura de fundo sutil (papel/doodle), no estilo do WhatsApp — SVG inline, sem asset externo
+const CHAT_BG_PATTERN = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'%3E%3Cg fill='%23000000' fill-opacity='0.025'%3E%3Ccircle cx='10' cy='10' r='1.5'/%3E%3Ccircle cx='50' cy='30' r='1.5'/%3E%3Ccircle cx='85' cy='15' r='1.5'/%3E%3Ccircle cx='30' cy='60' r='1.5'/%3E%3Ccircle cx='70' cy='70' r='1.5'/%3E%3Ccircle cx='15' cy='85' r='1.5'/%3E%3Ccircle cx='90' cy='90' r='1.5'/%3E%3C/g%3E%3C/svg%3E")`;
+
 const S: Record<string, React.CSSProperties> = {
   root: {
     display: 'flex', flexDirection: 'column',
     height: '100dvh', maxWidth: 640, margin: '0 auto',
-    background: '#f1f5f9', fontFamily: 'system-ui, sans-serif',
+    background: '#ECE5DD', fontFamily: 'system-ui, sans-serif',
   },
   header: {
     display: 'flex', alignItems: 'center', gap: '0.75rem',
-    padding: '0.875rem 1rem', background: '#2563eb', color: '#fff', flexShrink: 0,
-    boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+    padding: '0.75rem 1rem', background: '#075E54', color: '#fff', flexShrink: 0,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.15)', zIndex: 1,
   },
-  avatar: { fontSize: '1.75rem', lineHeight: 1 },
-  headerTitle: { fontWeight: 700, fontSize: '1rem', lineHeight: 1.2 },
-  headerSub: { fontSize: '0.75rem', opacity: 0.82, marginTop: '0.1rem' },
+  avatar: {
+    fontSize: '1.4rem', lineHeight: 1, width: 40, height: 40, borderRadius: '50%',
+    background: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    flexShrink: 0,
+  },
+  headerTitle: { fontWeight: 600, fontSize: '1rem', lineHeight: 1.2 },
+  headerSub: { fontSize: '0.75rem', opacity: 0.85, marginTop: '0.15rem' },
   messageList: {
-    flex: 1, overflowY: 'auto', padding: '1rem',
-    display: 'flex', flexDirection: 'column', gap: '0.375rem',
+    flex: 1, overflowY: 'auto', padding: '0.75rem 1rem',
+    display: 'flex', flexDirection: 'column', gap: '0.25rem',
+    backgroundColor: '#ECE5DD', backgroundImage: CHAT_BG_PATTERN,
   },
   empty: {
-    textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem',
+    textAlign: 'center', color: '#8a8a8a', fontSize: '0.85rem',
     padding: '2rem 1rem', margin: 0,
   },
-  row: { display: 'flex', width: '100%' },
+  dividerRow: { display: 'flex', justifyContent: 'center', margin: '0.6rem 0' },
+  dividerPill: {
+    background: '#E1F3FB', color: '#4a5b60', fontSize: '0.72rem', fontWeight: 500,
+    padding: '0.3rem 0.75rem', borderRadius: 8, boxShadow: '0 1px 1px rgba(0,0,0,0.08)',
+  },
+  row: { display: 'flex', width: '100%', marginBottom: '0.15rem' },
   bubble: {
-    maxWidth: '76%', padding: '0.5rem 0.75rem',
-    borderRadius: 16, fontSize: '0.9rem', lineHeight: 1.5,
-    wordBreak: 'break-word',
+    maxWidth: '76%', padding: '0.4rem 0.6rem 0.3rem',
+    borderRadius: 8, fontSize: '0.9rem', lineHeight: 1.4,
+    wordBreak: 'break-word', boxShadow: '0 1px 0.5px rgba(0,0,0,0.13)',
   },
   bubbleAgent: {
-    background: '#fff', color: '#1e293b', borderTopLeftRadius: 4,
-    boxShadow: '0 1px 3px rgba(0,0,0,0.07)',
+    background: '#fff', color: '#111b21', borderTopLeftRadius: 0,
   },
   bubbleMe: {
-    background: '#2563eb', color: '#fff', borderTopRightRadius: 4,
+    background: '#DCF8C6', color: '#111b21', borderTopRightRadius: 0,
   },
   senderName: {
-    fontSize: '0.68rem', fontWeight: 700, marginBottom: '0.2rem',
-    opacity: 0.55, textTransform: 'uppercase', letterSpacing: '0.04em',
+    fontSize: '0.68rem', fontWeight: 700, marginBottom: '0.15rem',
+    color: '#075E54',
   },
   msgText: { margin: 0, whiteSpace: 'pre-wrap' },
   attach: { marginTop: '0.4rem' },
   attachImg: { maxWidth: 220, borderRadius: 8, display: 'block', marginTop: '0.25rem' },
   attachDesc: { fontSize: '0.78rem', margin: '0.2rem 0 0', opacity: 0.75 },
-  ts: { fontSize: '0.6rem', opacity: 0.5, textAlign: 'right', marginTop: '0.3rem' },
+  metaRow: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.25rem', marginTop: '0.15rem' },
+  ts: { fontSize: '0.65rem', opacity: 0.55 },
+  check: { fontSize: '0.7rem', color: '#53bdeb', letterSpacing: '-0.15em' },
   errorBar: {
     background: '#fee2e2', color: '#b91c1c',
     padding: '0.5rem 1rem', fontSize: '0.85rem',
@@ -284,22 +355,23 @@ const S: Record<string, React.CSSProperties> = {
   },
   inputRow: {
     display: 'flex', alignItems: 'center', gap: '0.5rem',
-    padding: '0.625rem 0.75rem', background: '#fff',
+    padding: '0.5rem 0.75rem', background: '#F0F0F0',
     borderTop: '1px solid #e2e8f0', flexShrink: 0,
   },
   textInput: {
-    flex: 1, border: '1px solid #e2e8f0', borderRadius: 999,
-    padding: '0.55rem 0.875rem', fontSize: '0.9rem',
-    outline: 'none', background: '#f8fafc', minWidth: 0,
+    flex: 1, border: 'none', borderRadius: 999,
+    padding: '0.6rem 1rem', fontSize: '0.9rem',
+    outline: 'none', background: '#fff', minWidth: 0,
+    boxShadow: '0 1px 1px rgba(0,0,0,0.08)',
   },
   iconBtn: {
     background: 'none', border: 'none', cursor: 'pointer',
-    fontSize: '1.1rem', padding: '0.375rem', borderRadius: 8,
-    flexShrink: 0, lineHeight: 1,
+    fontSize: '1.2rem', padding: '0.375rem', borderRadius: 8,
+    flexShrink: 0, lineHeight: 1, color: '#54656f',
   },
   sendBtn: {
-    background: '#2563eb', color: '#fff',
-    borderRadius: '50%', width: 36, height: 36,
+    background: '#25D366', color: '#fff',
+    borderRadius: '50%', width: 38, height: 38,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     fontSize: '0.9rem',
   },
