@@ -40,6 +40,7 @@ async function registerVisitor(name: string, phone: string, token: string): Prom
       visitor: {
         name,
         token,
+        phone, // native field — required for omnichannel/contact.search to find this visitor later
         department: SAPIOS_DEPT_ID,
         customFields: [{ key: 'phone', value: phone, overwrite: true }],
       },
