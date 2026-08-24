@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: pastacarlo
+    env: node
+    plan: free
+    buildCommand: cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build
+    startCommand: cd backend && npm start
+    envVars:
+      - key: ROCKETCHAT_URL
+        sync: false
+      - key: ROCKETCHAT_ADMIN_TOKEN
+        sync: false
+      - key: ROCKETCHAT_ADMIN_USER_ID
+        sync: false
+      - key: LIVECHAT_WEBHOOK_SECRET
+        sync: false
+      - key: RECONCILE_INTERVAL_SECONDS
+        value: "30"
+      - key: ROCKETCHAT_LIVECHAT_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false

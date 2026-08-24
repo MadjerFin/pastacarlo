@@ -1,0 +1,64 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --color-bg: #f0f4f8;
+  --color-card: #ffffff;
+  --color-primary: #2563eb;
+  --color-primary-light: #dbeafe;
+  --color-success: #16a34a;
+  --color-success-light: #dcfce7;
+  --color-text: #1e293b;
+  --color-muted: #64748b;
+  --color-border: #e2e8f0;
+  --radius: 16px;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+#root {
+  width: 100%;
+  max-width: 480px;
+}
+
+/* Quando o widget RC estiver ativo, ocupa tela cheia */
+body.rc-chat-active {
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  background: #fff;
+}
+
+body.rc-chat-active #root {
+  max-width: 100%;
+}
+
+/* Força o iframe do widget RC a ocupar tela inteira */
+body.rc-chat-active #rocketchat-iframe {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  border-radius: 0 !important;
+  z-index: 9999 !important;
+}
+
+/* Esconde o botão flutuante de abrir/fechar o widget */
+body.rc-chat-active #rocketchat-widget {
+  display: none !important;
+}
