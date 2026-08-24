@@ -104,6 +104,34 @@ router.post('/message', async (req: Request, res: Response) => {
   }
 });
 
+// POST /chat/close  body: { token, roomId }
+// Lets the visitor end their own conversation (same endpoint the RC livechat widget uses).
+router.post('/close', async (req: Request, res: Response) => {
+  const { token, roomId } = req.body as { token?: string; roomId?: string };
+  if (!token || !roomId) {
+    res.status(400).json({ ok: false, error: 'token e roomId são obrigatórios' });
+    return;
+  }
+
+  try {
+    const upstream = await fetch(`${RC()}/api/v1/livechat/room.close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rid: roomId, token }),
+    });
+    const body = await upstream.json() as { success?: boolean; error?: string };
+    if (!body.success) {
+      console.warn(`[chat] close rejected by RC: roomId=${roomId} error=${body.error}`);
+      res.status(409).json(body);
+      return;
+    }
+    res.json(body);
+  } catch (err) {
+    console.error('[chat] close error:', err);
+    res.status(502).json({ ok: false });
+  }
+});
+
 // POST /chat/upload/:roomId?token=TOKEN  body: multipart with 'file' field
 router.post('/upload/:roomId', upload.single('file'), async (req: Request, res: Response) => {
   const { roomId } = req.params;

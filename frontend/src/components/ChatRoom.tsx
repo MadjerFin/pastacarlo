@@ -35,6 +35,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [roomClosed, setRoomClosed] = useState(false);
+  const [closing, setClosing] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const lastTsRef = useRef<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -153,6 +154,24 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
     }
   }
 
+  async function closeConversation() {
+    if (!window.confirm('Tem certeza que deseja encerrar esta conversa?')) return;
+    setClosing(true);
+    try {
+      const res = await fetch('/chat/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: visitorToken, roomId }),
+      });
+      if (res.ok || res.status === 409) { setRoomClosed(true); return; }
+      throw new Error();
+    } catch {
+      setError('Erro ao encerrar a conversa. Tente novamente.');
+    } finally {
+      setClosing(false);
+    }
+  }
+
   function isFromVisitor(msg: RcMessage) {
     return msg.token === visitorToken || msg.u.username?.startsWith('guest-');
   }
@@ -167,12 +186,23 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
       {/* Header */}
       <header style={S.header}>
         <div style={S.avatar}>💬</div>
-        <div>
+        <div style={{ flex: 1 }}>
           <div style={S.headerTitle}>Atendimento</div>
           <div style={S.headerSub}>
             {visitorName ? `Olá, ${visitorName}` : 'Conectado com um agente'}
           </div>
         </div>
+        {!roomClosed && (
+          <button
+            type="button"
+            onClick={closeConversation}
+            disabled={closing}
+            style={S.endBtn}
+            title="Encerrar conversa"
+          >
+            {closing ? '⏳' : 'Encerrar'}
+          </button>
+        )}
       </header>
 
       {/* Messages */}
@@ -237,7 +267,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
       {/* Sala encerrada — bloqueia o envio e oferece iniciar um novo atendimento */}
       {roomClosed && (
         <div style={S.closedBar}>
-          <span>Esta conversa foi encerrada pelo atendente.</span>
+          <span>Esta conversa foi encerrada.</span>
           <button
             type="button"
             style={S.reloadBtn}
@@ -344,6 +374,11 @@ const S: Record<string, React.CSSProperties> = {
   },
   headerTitle: { fontWeight: 600, fontSize: '1rem', lineHeight: 1.2 },
   headerSub: { fontSize: '0.75rem', opacity: 0.85, marginTop: '0.15rem' },
+  endBtn: {
+    background: 'rgba(255,255,255,0.15)', color: '#fff', border: 'none',
+    padding: '0.4rem 0.85rem', borderRadius: 999, fontSize: '0.78rem',
+    fontWeight: 600, cursor: 'pointer', flexShrink: 0,
+  },
   messageList: {
     flex: 1, overflowY: 'auto', padding: '0.75rem 1rem',
     display: 'flex', flexDirection: 'column', gap: '0.25rem',
