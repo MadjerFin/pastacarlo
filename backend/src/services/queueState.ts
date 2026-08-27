@@ -24,7 +24,11 @@ class QueueState {
 
   // ── Queue mutation ──────────────────────────────────────────────────────────
 
-  enqueue(roomId: string, visitorToken: string): void {
+  // `createdAt` is the room's real creation time in Rocket.Chat (epoch ms), when
+  // known — used instead of Date.now() so the position reflects the actual order
+  // visitors entered the RC queue, not the order our backend observed them (which
+  // can differ after a restart, a missed webhook, or a reconciliation self-heal).
+  enqueue(roomId: string, visitorToken: string, createdAt?: number): void {
     if (this.entries.has(visitorToken)) {
       // idempotent: already in queue — just make sure status is correct
       const entry = this.entries.get(visitorToken)!;
@@ -32,13 +36,14 @@ class QueueState {
         entry.status = 'queued';
         entry.agentUrl = undefined;
       }
+      if (createdAt !== undefined) entry.enteredAt = createdAt;
     } else {
       const entry: VisitorEntry = {
         roomId,
         visitorToken,
         status: 'queued',
         position: 0, // recalculated below
-        enteredAt: Date.now(),
+        enteredAt: createdAt ?? Date.now(),
       };
       this.entries.set(visitorToken, entry);
       this.roomIndex.set(roomId, visitorToken);
@@ -75,18 +80,31 @@ class QueueState {
 
   // ── Reconciliation (called from the periodic job) ─────────────────────────
 
-  reconcile(activeRoomIds: Set<string>): void {
+  reconcile(queuedRooms: Map<string, { visitorToken: string; createdAt: number }>): void {
     let changed = false;
+
     // Remove entries for rooms that are no longer in the Rocket.Chat queue
     for (const [roomId, token] of this.roomIndex.entries()) {
       const entry = this.entries.get(token);
-      if (entry?.status === 'queued' && !activeRoomIds.has(roomId)) {
+      if (entry?.status === 'queued' && !queuedRooms.has(roomId)) {
         this.entries.delete(token);
         this.roomIndex.delete(roomId);
         changed = true;
         console.log(`[queue] reconcile removed stale roomId=${roomId}`);
       }
     }
+
+    // Self-heal: add rooms RC has queued but we don't know about (e.g. after a
+    // backend restart, or a missed webhook), using RC's real creation time so
+    // they land in the correct position instead of jumping to the back.
+    for (const [roomId, { visitorToken, createdAt }] of queuedRooms.entries()) {
+      if (!this.roomIndex.has(roomId)) {
+        this.enqueue(roomId, visitorToken, createdAt);
+        changed = true;
+        console.log(`[queue] reconcile added missing roomId=${roomId}`);
+      }
+    }
+
     if (changed) {
       this.recalcPositions();
       this.broadcastQueueUpdate();
@@ -97,6 +115,11 @@ class QueueState {
 
   getEntry(visitorToken: string): VisitorEntry | undefined {
     return this.entries.get(visitorToken);
+  }
+
+  getEntryByRoomId(roomId: string): VisitorEntry | undefined {
+    const token = this.roomIndex.get(roomId);
+    return token ? this.entries.get(token) : undefined;
   }
 
   getQueuedCount(): number {

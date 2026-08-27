@@ -5,7 +5,13 @@ interface RocketChatRoom {
   open?: boolean;
   servedBy?: { _id: string; username: string };
   v?: { token: string };
+  ts?: string; // room creation time (ISO) — used to order the queue correctly
   [key: string]: unknown;
+}
+
+export interface QueuedRoom {
+  visitorToken: string;
+  createdAt: number; // epoch ms, from room.ts
 }
 
 interface RocketChatRoomsResponse {
@@ -18,18 +24,21 @@ interface RocketChatRoomsResponse {
 
 const PAGE_SIZE = 50;
 
-// Fetch open rooms that have no agent assigned yet (truly queued)
-export async function fetchQueuedRoomIds(): Promise<Set<string>> {
+// Fetch open rooms that have no agent assigned yet (truly queued), keyed by
+// roomId with the visitor token and real creation time — needed so the local
+// queue can be rebuilt (e.g. after a backend restart) in the same order RC
+// actually queued them, not the order we happen to observe them.
+export async function fetchQueuedRooms(): Promise<Map<string, QueuedRoom>> {
   const base = process.env.ROCKETCHAT_URL;
   const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
   const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
 
+  const rooms = new Map<string, QueuedRoom>();
   if (!base || !token || !userId) {
     console.warn('[rcapi] Missing credentials — skipping reconcile');
-    return new Set();
+    return rooms;
   }
 
-  const roomIds = new Set<string>();
   let offset = 0;
 
   while (true) {
@@ -48,8 +57,11 @@ export async function fetchQueuedRoomIds(): Promise<Set<string>> {
 
     for (const room of body.rooms) {
       // A room is "queued" (waiting for human agent) when open and not yet served
-      if (room.open && !room.servedBy) {
-        roomIds.add(room._id);
+      if (room.open && !room.servedBy && room.v?.token) {
+        rooms.set(room._id, {
+          visitorToken: room.v.token,
+          createdAt: room.ts ? new Date(room.ts).getTime() : Date.now(),
+        });
       }
     }
 
@@ -57,15 +69,57 @@ export async function fetchQueuedRoomIds(): Promise<Set<string>> {
     offset += PAGE_SIZE;
   }
 
-  return roomIds;
+  return rooms;
+}
+
+export interface RoomInfo {
+  open: boolean;
+  servedBy?: unknown;
+  createdAt?: number;
+  visitorToken?: string;
+}
+
+// Fetch a single room's live status directly from Rocket.Chat by roomId —
+// used as ground truth (independent of our in-memory queueState, which is
+// lost on backend restarts and only updated via webhooks/reconciliation).
+export async function fetchRoomInfo(roomId: string): Promise<RoomInfo | null> {
+  const base = process.env.ROCKETCHAT_URL;
+  const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
+  const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
+
+  if (!base || !token || !userId) {
+    console.warn('[rcapi] Missing credentials — skipping fetchRoomInfo');
+    return null;
+  }
+
+  try {
+    const url = `${base}/api/v1/rooms.info?roomId=${encodeURIComponent(roomId)}`;
+    const res = await fetch(url, {
+      headers: { 'X-Auth-Token': token, 'X-User-Id': userId },
+    });
+    if (!res.ok) return null;
+
+    const body = await res.json() as { room?: RocketChatRoom; success?: boolean };
+    if (!body.success || !body.room) return null;
+
+    return {
+      open: !!body.room.open,
+      servedBy: body.room.servedBy,
+      createdAt: body.room.ts ? new Date(body.room.ts).getTime() : undefined,
+      visitorToken: body.room.v?.token,
+    };
+  } catch (err) {
+    console.error('[rcapi] fetchRoomInfo error:', err);
+    return null;
+  }
 }
 
 export async function runReconciliation(): Promise<void> {
   console.log('[rcapi] starting reconciliation...');
   try {
-    const activeRoomIds = await fetchQueuedRoomIds();
-    queueState.reconcile(activeRoomIds);
-    console.log(`[rcapi] reconciliation done — ${activeRoomIds.size} queued rooms in RC`);
+    const queuedRooms = await fetchQueuedRooms();
+    queueState.reconcile(queuedRooms);
+    console.log(`[rcapi] reconciliation done — ${queuedRooms.size} queued rooms in RC`);
   } catch (err) {
     console.error('[rcapi] reconciliation error:', err);
   }

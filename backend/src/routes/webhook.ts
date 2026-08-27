@@ -13,6 +13,7 @@ interface RCWebhookPayload {
   trigger?: RCEventType;
   room?: {
     _id: string;
+    ts?: string;
     [key: string]: unknown;
   };
   visitor?: {
@@ -91,9 +92,11 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
 
   switch (eventType) {
     case 'LivechatSessionQueued':
-    case 'Chat Queued':
-      queueState.enqueue(roomId, visitorToken);
+    case 'Chat Queued': {
+      const createdAt = payload.room?.ts ? new Date(payload.room.ts).getTime() : undefined;
+      queueState.enqueue(roomId, visitorToken, createdAt);
       break;
+    }
 
     case 'LivechatSessionTaken':
     case 'Chat Taken': {
