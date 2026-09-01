@@ -187,13 +187,14 @@ export async function findContactTokenByPhone(phone: string): Promise<string | n
 }
 
 export interface VisitorInfo {
+  id?: string;
   name?: string;
   phone?: string;
 }
 
-// Fetch a visitor's name/phone by their RC token — used to prefill the
-// "abrir nova sala" link (nome+tel são obrigatórios em /entrar) when a
-// visitor's room is closed.
+// Fetch a visitor's RC id/name/phone by their token — used both to prefill
+// the "abrir nova sala" link (nome+tel são obrigatórios em /entrar) and to
+// resolve the visitorId needed by fetchOpenRoomForVisitorId below.
 export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInfo | null> {
   const base = process.env.ROCKETCHAT_URL;
   const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
@@ -212,7 +213,7 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
     if (!res.ok) return null;
 
     const body = await res.json() as {
-      visitor?: { name?: string; phone?: string | Array<{ phoneNumber?: string }> };
+      visitor?: { _id?: string; name?: string; phone?: string | Array<{ phoneNumber?: string }> };
       success?: boolean;
     };
     if (!body.success || !body.visitor) return null;
@@ -220,9 +221,58 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
     const rawPhone = body.visitor.phone;
     const phone = typeof rawPhone === 'string' ? rawPhone : rawPhone?.[0]?.phoneNumber;
 
-    return { name: body.visitor.name, phone };
+    return { id: body.visitor._id, name: body.visitor.name, phone };
   } catch (err) {
     console.error('[rcapi] fetchVisitorInfo error:', err);
+    return null;
+  }
+}
+
+export interface OpenRoomLookup {
+  roomId: string;
+  open: boolean;
+  servedBy?: unknown;
+  departmentId?: string;
+  createdAt?: number;
+}
+
+// Read-only check: does this visitor currently have an open room? Deliberately
+// NOT using GET /livechat/room?token=... (the endpoint openRoom() in
+// visitors.ts uses to actually start/resume a chat) — that endpoint creates a
+// brand new room as a side effect when the visitor has none, which is exactly
+// wrong for a caller that's just polling status (self-heal, bot checks). This
+// uses the admin rooms listing filtered by visitorId instead, which only ever
+// reads.
+export async function fetchOpenRoomForVisitorId(visitorId: string): Promise<OpenRoomLookup | null> {
+  const base = process.env.ROCKETCHAT_URL;
+  const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
+  const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
+
+  if (!base || !token || !userId) {
+    console.warn('[rcapi] Missing credentials — skipping fetchOpenRoomForVisitorId');
+    return null;
+  }
+
+  try {
+    const url = `${base}/api/v1/livechat/rooms?visitorId=${encodeURIComponent(visitorId)}&open=true&count=1`;
+    const res = await fetch(url, {
+      headers: { 'X-Auth-Token': token, 'X-User-Id': userId },
+    });
+    if (!res.ok) return null;
+
+    const body = await res.json() as { rooms?: RocketChatRoom[]; success?: boolean };
+    const room = body.rooms?.[0];
+    if (!body.success || !room) return null;
+
+    return {
+      roomId: room._id,
+      open: !!room.open,
+      servedBy: room.servedBy,
+      departmentId: room.departmentId,
+      createdAt: parseRcDate(room.ts),
+    };
+  } catch (err) {
+    console.error('[rcapi] fetchOpenRoomForVisitorId error:', err);
     return null;
   }
 }

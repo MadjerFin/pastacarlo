@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { queueState } from '../services/queueState';
-import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, parseRcDate } from '../services/rocketchatApi';
+import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, fetchOpenRoomForVisitorId } from '../services/rocketchatApi';
 import { buildAgentUrl, buildAppLink, buildEntrarLink } from '../services/links';
 import { botRateLimit } from '../middleware/botRateLimit';
 
@@ -150,23 +150,25 @@ router.get('/:visitorToken', (req: Request, res: Response) => {
   });
 });
 
+// Read-only status check — deliberately does NOT call RC's GET /livechat/room?
+// token=... (that's what visitors.ts's openRoom() uses to actually start/resume
+// a chat, and it creates a new room as a side effect when the visitor has
+// none). This resolves the visitor's RC id first, then asks the admin rooms
+// listing whether they have an open room — never creates anything, so a bot
+// or a self-heal check can't accidentally open a room the visitor never asked for.
 async function checkRcRoomStatus(visitorToken: string): Promise<{ status: 'queued' | 'connected' | 'none'; roomId?: string; departmentId?: string; createdAt?: number }> {
-  const base = process.env.ROCKETCHAT_URL;
-  try {
-    const res = await fetch(`${base}/api/v1/livechat/room?token=${encodeURIComponent(visitorToken)}`);
-    if (!res.ok) return { status: 'none' };
-    const body = await res.json() as { room?: { _id?: string; open?: boolean; servedBy?: unknown; departmentId?: string; ts?: unknown }; success?: boolean };
-    const room = body.room;
-    if (!room?._id || !room.open) return { status: 'none' };
-    return {
-      status: room.servedBy ? 'connected' : 'queued',
-      roomId: room._id,
-      departmentId: room.departmentId,
-      createdAt: parseRcDate(room.ts),
-    };
-  } catch {
-    return { status: 'none' };
-  }
+  const info = await fetchVisitorInfo(visitorToken);
+  if (!info?.id) return { status: 'none' };
+
+  const room = await fetchOpenRoomForVisitorId(info.id);
+  if (!room?.open) return { status: 'none' };
+
+  return {
+    status: room.servedBy ? 'connected' : 'queued',
+    roomId: room.roomId,
+    departmentId: room.departmentId,
+    createdAt: room.createdAt,
+  };
 }
 
 // GET /queue/stream/:visitorToken — SSE stream
