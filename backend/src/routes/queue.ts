@@ -1,12 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { queueState } from '../services/queueState';
-import { fetchRoomInfo } from '../services/rocketchatApi';
+import { fetchRoomInfo, findContactTokenByPhone } from '../services/rocketchatApi';
+import { botRateLimit } from '../middleware/botRateLimit';
 
 const router = Router();
 
 // GET /queue/room/:roomId — posição na fila e status aberto/fechado da sala,
 // identificados pelo roomId do Rocket.Chat (não pelo visitorToken).
-router.get('/room/:roomId', async (req: Request, res: Response) => {
+router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) => {
   const { roomId } = req.params;
 
   let entry = queueState.getEntryByRoomId(roomId);
@@ -34,6 +35,53 @@ router.get('/room/:roomId', async (req: Request, res: Response) => {
   res.json({
     ok: true,
     roomId,
+    open,
+    status,
+    position: status === 'queued' ? entry?.position ?? null : null,
+    queueSize: status === 'queued' ? queueState.getQueuedCount() : null,
+  });
+});
+
+// POST /queue/phone  body: { phone }
+// Como /room/:roomId, mas para quando o chamador (bot) só tem o telefone do
+// visitante, não o roomId do Rocket.Chat. É POST (telefone no corpo, não na
+// URL) para não deixar o número em logs de acesso, proxies ou histórico do
+// navegador. Rate limit — telefone é um identificador adivinhável, diferente
+// do roomId (opaco, gerado pela RC).
+router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
+  const { phone } = req.body as { phone?: string };
+  if (!phone) {
+    res.status(400).json({ ok: false, error: 'phone_required' });
+    return;
+  }
+
+  const cleanPhone = phone.replace(/\D/g, '');
+  const token = await findContactTokenByPhone(cleanPhone);
+
+  if (!token) {
+    res.status(404).json({ ok: false, error: 'visitor_not_found' });
+    return;
+  }
+
+  let entry = queueState.getEntry(token);
+  const rc = await checkRcRoomStatus(token);
+
+  // Self-heal: RC sabe de uma sala em fila que ainda não conhecemos
+  // localmente (reinício do backend, webhook perdido).
+  if (!entry && rc.status === 'queued' && rc.roomId) {
+    queueState.enqueue(rc.roomId, token, rc.createdAt);
+    entry = queueState.getEntry(token);
+  }
+
+  const open = entry
+    ? entry.status === 'queued' || entry.status === 'connected'
+    : rc.status !== 'none';
+  const status: 'queued' | 'connected' | 'closed' =
+    entry?.status ?? (rc.status === 'none' ? 'closed' : rc.status);
+
+  res.json({
+    ok: true,
+    roomId: entry?.roomId ?? rc.roomId ?? null,
     open,
     status,
     position: status === 'queued' ? entry?.position ?? null : null,

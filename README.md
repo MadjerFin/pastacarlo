@@ -126,6 +126,8 @@ Frontend recebe "connected"  ──►  redireciona para URL do livechat
 |--------|------|-----------|
 | POST | `/webhooks/rocketchat` | Recebe eventos do Omnichannel |
 | GET | `/queue/:visitorToken` | Snapshot do status atual |
+| GET | `/queue/room/:roomId` | Posição na fila e status aberto/fechado, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |
+| POST | `/queue/phone` `{ phone }` | Idem, mas resolvendo o visitante pelo telefone. É POST (telefone no body, não na URL) para não deixar o número em logs de acesso/proxies; rate limit 20 req/min por IP |
 | GET | `/queue/stream/:visitorToken` | SSE com atualizações em tempo real |
 | GET | `/health` | Health check |
 

@@ -1,35 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
+import { findContactTokenByPhone } from '../services/rocketchatApi';
 
 const router = Router();
 
 const SAPIOS_DEPT_ID = '69316b35a79d2ae8ad44383f';
-
-function rcHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'X-Auth-Token': process.env.ROCKETCHAT_ADMIN_TOKEN ?? '',
-    'X-User-Id': process.env.ROCKETCHAT_ADMIN_USER_ID ?? '',
-  };
-}
-
-async function findContactByPhone(phone: string): Promise<string | null> {
-  const base = process.env.ROCKETCHAT_URL;
-  const res = await fetch(
-    `${base}/api/v1/omnichannel/contact.search?phone=${encodeURIComponent(phone)}`,
-    { headers: rcHeaders() },
-  );
-  if (!res.ok) return null;
-  const body = await res.json() as { contact?: { token?: string } };
-  const token = body.contact?.token ?? null;
-  // Ignore tokens we generated ourselves (base64url of 'sapios:phone') — they're
-  // rejected by the RC livechat page. Let RC generate a fresh one instead.
-  if (token?.startsWith('c2FwaW9z')) {
-    console.log(`[visitors] ignoring legacy custom token, will request fresh RC token`);
-    return null;
-  }
-  return token;
-}
 
 async function registerVisitor(name: string | undefined, phone: string, token: string): Promise<string> {
   const base = process.env.ROCKETCHAT_URL;
@@ -80,7 +55,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
   try {
     // 1. Check if visitor already exists in RC by phone (returns their RC-generated token)
-    const existingToken = await findContactByPhone(cleanPhone);
+    const existingToken = await findContactTokenByPhone(cleanPhone);
 
     // Use existing RC token or generate a random hex one (same format RC uses internally)
     const tokenToUse = existingToken ?? randomBytes(17).toString('hex');

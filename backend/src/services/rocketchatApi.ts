@@ -114,6 +114,35 @@ export async function fetchRoomInfo(roomId: string): Promise<RoomInfo | null> {
   }
 }
 
+// Resolve a visitor's Rocket.Chat token from their phone number — used
+// wherever a caller (bot, registration flow) only knows the phone, not the
+// RC token or roomId.
+export async function findContactTokenByPhone(phone: string): Promise<string | null> {
+  const base = process.env.ROCKETCHAT_URL;
+  const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
+  const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
+
+  try {
+    const res = await fetch(
+      `${base}/api/v1/omnichannel/contact.search?phone=${encodeURIComponent(phone)}`,
+      { headers: { 'X-Auth-Token': token ?? '', 'X-User-Id': userId ?? '' } },
+    );
+    if (!res.ok) return null;
+    const body = await res.json() as { contact?: { token?: string } };
+    const visitorToken = body.contact?.token ?? null;
+    // Ignore tokens we generated ourselves (base64url of 'sapios:phone') — they're
+    // rejected by the RC livechat page. Let RC generate a fresh one instead.
+    if (visitorToken?.startsWith('c2FwaW9z')) {
+      console.log('[rcapi] ignoring legacy custom token, will request fresh RC token');
+      return null;
+    }
+    return visitorToken;
+  } catch (err) {
+    console.error('[rcapi] findContactTokenByPhone error:', err);
+    return null;
+  }
+}
+
 export async function runReconciliation(): Promise<void> {
   console.log('[rcapi] starting reconciliation...');
   try {
