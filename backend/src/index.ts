@@ -12,6 +12,12 @@ const app = express();
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
+// Render (and most PaaS) sit behind a reverse proxy that sets X-Forwarded-For.
+// Without this, Express doesn't trust that header, and express-rate-limit
+// refuses to key by IP (throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR) since an
+// untrusted X-Forwarded-For could be spoofed by the client to bypass limits.
+app.set('trust proxy', 1);
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', FRONTEND_URL);

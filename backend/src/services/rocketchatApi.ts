@@ -58,12 +58,16 @@ export interface QueuedRoomsResult {
   addable: Map<string, QueuedRoom>;
 }
 
-// Fetch open rooms that have no agent assigned yet (truly queued). Split into
-// roomIds (used to detect rooms no longer queued, for removal) and addable
-// (roomId -> visitor token + real creation time, for self-healing entries we
-// don't know about locally) because `room.v.token` isn't guaranteed to be
-// present on every room returned by this listing endpoint — treating its
-// absence as "not queued" would incorrectly evict a still-active room.
+// Fetch every currently-open room (queued or already connected to an agent).
+// roomIds covers ALL of them — used to detect rooms that are truly gone (i.e.
+// closed), for removal. addable is the narrower subset that's still
+// unserved, used to self-heal missing "queued" entries. These must stay
+// separate on two counts: (1) a room that just got taken by an agent is
+// still open, just no longer unserved — treating "not unserved" as "not
+// open" would evict a visitor the instant they connect, before the
+// LivechatSessionTaken webhook even lands; (2) `room.v.token` isn't
+// guaranteed present on every room this listing returns, so requiring it for
+// removal-eligibility would also incorrectly evict a still-active room.
 export async function fetchQueuedRooms(): Promise<QueuedRoomsResult> {
   const base = process.env.ROCKETCHAT_URL;
   const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
@@ -93,16 +97,19 @@ export async function fetchQueuedRooms(): Promise<QueuedRoomsResult> {
     if (!body.success || !Array.isArray(body.rooms)) break;
 
     for (const room of body.rooms) {
-      // A room is "queued" (waiting for human agent) when open and not yet served
-      if (room.open && !room.servedBy) {
-        roomIds.add(room._id);
-        if (room.v?.token && room.departmentId) {
-          addable.set(room._id, {
-            visitorToken: room.v.token,
-            departmentId: room.departmentId,
-            createdAt: parseRcDate(room.ts) ?? Date.now(),
-          });
-        }
+      // The `open=true` query already guarantees every room here is open —
+      // include all of them (served or not) so a room that just got taken by
+      // an agent isn't mistaken for one that closed.
+      if (!room.open) continue;
+      roomIds.add(room._id);
+
+      // Self-heal only applies to still-queued (unserved) rooms.
+      if (!room.servedBy && room.v?.token && room.departmentId) {
+        addable.set(room._id, {
+          visitorToken: room.v.token,
+          departmentId: room.departmentId,
+          createdAt: parseRcDate(room.ts) ?? Date.now(),
+        });
       }
     }
 
