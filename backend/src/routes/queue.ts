@@ -65,7 +65,9 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
   const rc = await fetchRoomInfo(roomId);
 
   if (!entry && !rc) {
-    res.status(404).json({ ok: false, error: 'not_found' });
+    // Sala nunca existiu ou já não está mais na RC — trata como "fechada" em
+    // vez de erro, pra o chamador não precisar tratar 404 separado de closed.
+    res.json({ ok: true, roomId, open: false, status: 'closed', position: null, queueSize: null, link: null });
     return;
   }
 
@@ -118,7 +120,9 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
   const token = await findContactTokenByPhone(cleanPhone);
 
   if (!token) {
-    res.status(404).json({ ok: false, error: 'visitor_not_found' });
+    // Telefone não corresponde a nenhum visitante conhecido na RC — trata como
+    // "fechada" em vez de erro, pra o chamador não precisar tratar 404 separado.
+    res.json({ ok: true, roomId: null, open: false, status: 'closed', position: null, queueSize: null, link: null });
     return;
   }
 
