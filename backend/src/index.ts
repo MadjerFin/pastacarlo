@@ -49,16 +49,21 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
 });
 
-// Debug: manually fire the "connected" event for a visitor (dev only)
-app.post('/debug/connect/:token', (req, res) => {
-  const { token } = req.params;
-  const { roomId } = req.body as { roomId?: string };
-  if (!roomId) { res.status(400).json({ ok: false, error: 'roomId required' }); return; }
-  const agentUrl = '';
-  queueState.markConnected(roomId, token, agentUrl);
-  console.log(`[debug] manually triggered connected for token=${token} roomId=${roomId}`);
-  res.json({ ok: true });
-});
+// Debug: manually fire the "connected" event for a visitor (dev only).
+// Gated behind an explicit opt-in — unauthenticated, and lets anyone force
+// any room into "connected" — so it must not be reachable unless someone
+// deliberately enabled it for local testing.
+if (process.env.ENABLE_DEBUG_ROUTES === 'true') {
+  app.post('/debug/connect/:token', (req, res) => {
+    const { token } = req.params;
+    const { roomId } = req.body as { roomId?: string };
+    if (!roomId) { res.status(400).json({ ok: false, error: 'roomId required' }); return; }
+    const agentUrl = '';
+    queueState.markConnected(roomId, token, agentUrl);
+    console.log(`[debug] manually triggered connected for token=${token} roomId=${roomId}`);
+    res.json({ ok: true });
+  });
+}
 
 // ── Frontend estático (build único: backend serve o frontend/dist) ─────────────
 const FRONTEND_DIST = path.join(__dirname, '../../frontend/dist');
