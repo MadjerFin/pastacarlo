@@ -125,6 +125,7 @@ Frontend recebe "connected"  ──►  redireciona para URL do livechat
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | POST | `/webhooks/rocketchat` | Recebe eventos do Omnichannel |
+| POST | `/visitors/register` `{ name, phone, fila? }` | Abre/reabre a sala do visitante — protegido por secret (`X-Bot-Token`), só o bot chama |
 | GET | `/queue/:visitorToken` | Snapshot do status atual |
 | GET | `/queue/room/:roomId` | Posição na fila, status (`queued`/`connected`/`closed`) e `link` correspondente, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |
 | POST | `/queue/phone` `{ phone }` | Idem, mas resolvendo o visitante pelo telefone. É POST (telefone no body, não na URL) para não deixar o número em logs de acesso/proxies; rate limit 20 req/min por IP |
@@ -165,12 +166,12 @@ O backend serve os arquivos estáticos do frontend (`frontend/dist`) diretamente
      ```
    - **Environment**: Node
 3. Configure as variáveis de ambiente do backend (aba *Environment* do Render, mesmos valores do `backend/.env`):
-   `ROCKETCHAT_URL`, `ROCKETCHAT_ADMIN_TOKEN`, `ROCKETCHAT_ADMIN_USER_ID`, `LIVECHAT_WEBHOOK_SECRET`, `RECONCILE_INTERVAL_SECONDS`, `ROCKETCHAT_LIVECHAT_URL`.
+   `ROCKETCHAT_URL`, `ROCKETCHAT_ADMIN_TOKEN`, `ROCKETCHAT_ADMIN_USER_ID`, `LIVECHAT_WEBHOOK_SECRET`, `BOT_API_SECRET`, `RECONCILE_INTERVAL_SECONDS`, `ROCKETCHAT_LIVECHAT_URL`.
    Não defina `PORT` — o Render injeta a própria porta automaticamente e o app já respeita `process.env.PORT`.
 4. Depois do primeiro deploy, você terá uma URL pública (ex: `https://pastacarlo.onrender.com`). Ajuste:
    - `FRONTEND_URL` no ambiente do Render para essa mesma URL (CORS deixa de ser um problema por serem mesma origem, mas mantenha por consistência).
    - O webhook no Rocket.Chat (Admin → Omnichannel → Webhooks) para `https://pastacarlo.onrender.com/webhooks/rocketchat`.
-5. Acesse `https://pastacarlo.onrender.com/entrar?nome=X&tel=Y` — funciona de qualquer computador, sem tunnel.
+5. `POST /visitors/register` exige `X-Bot-Token` (= `BOT_API_SECRET`) — só o bot pode abrir/reabrir salas agora. A página `/entrar?nome=X&tel=Y` chama essa rota do navegador e por isso **não funciona mais sozinha**: sem o header, ela recebe `401` e mostra a tela de erro (não deixa reaproveitar a conversa de outra pessoa só por saber o telefone).
 
 ### Escala
 
