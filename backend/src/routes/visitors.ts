@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
 import { findContactTokenByPhone, findDepartmentIdByName } from '../services/rocketchatApi';
+import { buildAppLink } from '../services/links';
 
 const router = Router();
 
@@ -86,7 +87,8 @@ router.post('/register', async (req: Request, res: Response) => {
     const roomId = await openRoom(confirmedToken);
     console.log(`[visitors] room opened roomId=${roomId} token=${confirmedToken.slice(0, 12)}...`);
 
-    res.json({ ok: true, token: confirmedToken, roomId });
+    const link = buildAppLink(confirmedToken, roomId || undefined, name, cleanPhone);
+    res.json({ ok: true, token: confirmedToken, roomId, link });
   } catch (err) {
     console.error('[visitors] register error:', err);
     res.status(500).json({ ok: false, error: 'Erro ao registrar visitante' });
