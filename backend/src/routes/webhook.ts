@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { validateWebhookSecret } from '../middleware/validateWebhook';
 import { queueState } from '../services/queueState';
+import { parseRcDate } from '../services/rocketchatApi';
 
 const router = Router();
 
@@ -13,7 +14,9 @@ interface RCWebhookPayload {
   trigger?: RCEventType;
   room?: {
     _id: string;
-    ts?: string;
+    // Pode vir como string ISO ou como Mongo extended JSON ({ $date: ... }),
+    // dependendo da versão/config do RC — ver parseRcDate.
+    ts?: unknown;
     [key: string]: unknown;
   };
   visitor?: {
@@ -93,7 +96,7 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
   switch (eventType) {
     case 'LivechatSessionQueued':
     case 'Chat Queued': {
-      const createdAt = payload.room?.ts ? new Date(payload.room.ts).getTime() : undefined;
+      const createdAt = parseRcDate(payload.room?.ts);
       queueState.enqueue(roomId, visitorToken, createdAt);
       break;
     }

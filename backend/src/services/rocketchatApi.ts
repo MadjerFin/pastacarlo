@@ -5,8 +5,30 @@ interface RocketChatRoom {
   open?: boolean;
   servedBy?: { _id: string; username: string };
   v?: { token: string };
-  ts?: string; // room creation time (ISO) — used to order the queue correctly
+  // Room creation time — used to order the queue correctly. Type is `unknown`
+  // because Rocket.Chat doesn't serialize this consistently: some responses
+  // send a plain ISO string, others send Mongo/BSON extended JSON
+  // (`{ $date: "..." }` or `{ $date: <epoch ms> }`). See parseRcDate below.
+  ts?: unknown;
   [key: string]: unknown;
+}
+
+// Parses a Rocket.Chat date field regardless of shape (ISO string, epoch ms,
+// or Mongo extended JSON `{ $date: ... }`). Returns undefined — never NaN —
+// on anything unparseable, so callers can safely fall back to Date.now()
+// instead of accidentally sorting an entry using NaN (which corrupts queue
+// ordering: a newer visitor can end up jumping ahead of everyone else).
+export function parseRcDate(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string') {
+    const ms = new Date(value).getTime();
+    return Number.isNaN(ms) ? undefined : ms;
+  }
+  if (typeof value === 'object' && '$date' in (value as Record<string, unknown>)) {
+    return parseRcDate((value as { $date: unknown }).$date);
+  }
+  return undefined;
 }
 
 export interface QueuedRoom {
@@ -75,7 +97,7 @@ export async function fetchQueuedRooms(): Promise<QueuedRoomsResult> {
         if (room.v?.token) {
           addable.set(room._id, {
             visitorToken: room.v.token,
-            createdAt: room.ts ? new Date(room.ts).getTime() : Date.now(),
+            createdAt: parseRcDate(room.ts) ?? Date.now(),
           });
         }
       }
@@ -121,7 +143,7 @@ export async function fetchRoomInfo(roomId: string): Promise<RoomInfo | null> {
     return {
       open: !!body.room.open,
       servedBy: body.room.servedBy,
-      createdAt: body.room.ts ? new Date(body.room.ts).getTime() : undefined,
+      createdAt: parseRcDate(body.room.ts),
       visitorToken: body.room.v?.token,
     };
   } catch (err) {

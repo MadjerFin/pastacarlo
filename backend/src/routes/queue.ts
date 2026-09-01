@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { queueState } from '../services/queueState';
-import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo } from '../services/rocketchatApi';
+import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, parseRcDate } from '../services/rocketchatApi';
 import { botRateLimit } from '../middleware/botRateLimit';
 
 const router = Router();
@@ -180,13 +180,13 @@ async function checkRcRoomStatus(visitorToken: string): Promise<{ status: 'queue
   try {
     const res = await fetch(`${base}/api/v1/livechat/room?token=${encodeURIComponent(visitorToken)}`);
     if (!res.ok) return { status: 'none' };
-    const body = await res.json() as { room?: { _id?: string; open?: boolean; servedBy?: unknown; ts?: string }; success?: boolean };
+    const body = await res.json() as { room?: { _id?: string; open?: boolean; servedBy?: unknown; ts?: unknown }; success?: boolean };
     const room = body.room;
     if (!room?._id || !room.open) return { status: 'none' };
     return {
       status: room.servedBy ? 'connected' : 'queued',
       roomId: room._id,
-      createdAt: room.ts ? new Date(room.ts).getTime() : undefined,
+      createdAt: parseRcDate(room.ts),
     };
   } catch {
     return { status: 'none' };
