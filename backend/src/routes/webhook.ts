@@ -14,6 +14,7 @@ interface RCWebhookPayload {
   trigger?: RCEventType;
   room?: {
     _id: string;
+    departmentId?: string;
     // Pode vir como string ISO ou como Mongo extended JSON ({ $date: ... }),
     // dependendo da versão/config do RC — ver parseRcDate.
     ts?: unknown;
@@ -97,7 +98,10 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
     case 'LivechatSessionQueued':
     case 'Chat Queued': {
       const createdAt = parseRcDate(payload.room?.ts);
-      queueState.enqueue(roomId, visitorToken, createdAt);
+      // Empty string is its own bucket for rooms with no department set — keeps
+      // position math isolated instead of crashing/comingling with real ones.
+      const departmentId = payload.room?.departmentId ?? '';
+      queueState.enqueue(roomId, visitorToken, departmentId, createdAt);
       break;
     }
 

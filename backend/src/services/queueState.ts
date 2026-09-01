@@ -5,8 +5,9 @@ export type VisitorStatus = 'queued' | 'connected' | 'closed';
 export interface VisitorEntry {
   roomId: string;
   visitorToken: string;
+  departmentId: string;
   status: VisitorStatus;
-  position: number;
+  position: number; // position within this visitor's own department, not global
   enteredAt: number; // epoch ms
   agentUrl?: string; // populated when status = 'connected'
 }
@@ -28,7 +29,9 @@ class QueueState {
   // known — used instead of Date.now() so the position reflects the actual order
   // visitors entered the RC queue, not the order our backend observed them (which
   // can differ after a restart, a missed webhook, or a reconciliation self-heal).
-  enqueue(roomId: string, visitorToken: string, createdAt?: number): void {
+  // Position is scoped to `departmentId` — visitors in different departments
+  // don't count against each other's place in line.
+  enqueue(roomId: string, visitorToken: string, departmentId: string, createdAt?: number): void {
     if (this.entries.has(visitorToken)) {
       // idempotent: already in queue — just make sure status is correct
       const entry = this.entries.get(visitorToken)!;
@@ -36,11 +39,13 @@ class QueueState {
         entry.status = 'queued';
         entry.agentUrl = undefined;
       }
+      entry.departmentId = departmentId;
       if (createdAt !== undefined) entry.enteredAt = createdAt;
     } else {
       const entry: VisitorEntry = {
         roomId,
         visitorToken,
+        departmentId,
         status: 'queued',
         position: 0, // recalculated below
         enteredAt: createdAt ?? Date.now(),
@@ -50,7 +55,7 @@ class QueueState {
     }
     this.recalcPositions();
     this.broadcastQueueUpdate();
-    console.log(`[queue] enqueue  roomId=${roomId} token=${visitorToken} pos=${this.entries.get(visitorToken)?.position}`);
+    console.log(`[queue] enqueue  roomId=${roomId} token=${visitorToken} dept=${departmentId} pos=${this.entries.get(visitorToken)?.position}`);
   }
 
   markConnected(roomId: string, visitorToken: string, agentUrl: string): void {
@@ -90,7 +95,7 @@ class QueueState {
   // that's still genuinely waiting, only for it to reappear as position 1 the
   // next time its visitor's tab (re)connects — since by then it'd be the only
   // entry left locally.
-  reconcile(activeRoomIds: Set<string>, addable: Map<string, { visitorToken: string; createdAt: number }>): void {
+  reconcile(activeRoomIds: Set<string>, addable: Map<string, { visitorToken: string; departmentId: string; createdAt: number }>): void {
     let changed = false;
 
     // Remove entries for rooms that are no longer in the Rocket.Chat queue
@@ -108,9 +113,9 @@ class QueueState {
     // Self-heal: add rooms RC has queued but we don't know about (e.g. after a
     // backend restart, or a missed webhook), using RC's real creation time so
     // they land in the correct position instead of jumping to the back.
-    for (const [roomId, { visitorToken, createdAt }] of addable.entries()) {
+    for (const [roomId, { visitorToken, departmentId, createdAt }] of addable.entries()) {
       if (!this.roomIndex.has(roomId)) {
-        this.enqueue(roomId, visitorToken, createdAt);
+        this.enqueue(roomId, visitorToken, departmentId, createdAt);
         changed = true;
         console.log(`[queue] reconcile added missing roomId=${roomId}`);
       }
@@ -133,9 +138,11 @@ class QueueState {
     return token ? this.entries.get(token) : undefined;
   }
 
-  getQueuedCount(): number {
+  getQueuedCount(departmentId: string): number {
     let n = 0;
-    for (const e of this.entries.values()) if (e.status === 'queued') n++;
+    for (const e of this.entries.values()) {
+      if (e.status === 'queued' && e.departmentId === departmentId) n++;
+    }
     return n;
   }
 
@@ -196,7 +203,7 @@ class QueueState {
       if (!clients || clients.size === 0) continue;
       const payload = {
         position: entry.position,
-        queueSize: this.getQueuedCount(),
+        queueSize: this.getQueuedCount(entry.departmentId),
         estimatedWaitSeconds: this.estimateWait(entry.position),
       };
       for (const res of clients) {
@@ -207,14 +214,20 @@ class QueueState {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  // Positions are per-department: a visitor's place in line only counts
+  // against others waiting for the same department, not the whole system.
   private recalcPositions(): void {
-    const queued = [...this.entries.values()]
-      .filter((e) => e.status === 'queued')
-      .sort((a, b) => a.enteredAt - b.enteredAt);
+    const byDept = new Map<string, VisitorEntry[]>();
+    for (const e of this.entries.values()) {
+      if (e.status !== 'queued') continue;
+      const bucket = byDept.get(e.departmentId);
+      if (bucket) bucket.push(e); else byDept.set(e.departmentId, [e]);
+    }
 
-    queued.forEach((e, i) => {
-      e.position = i + 1;
-    });
+    for (const bucket of byDept.values()) {
+      bucket.sort((a, b) => a.enteredAt - b.enteredAt);
+      bucket.forEach((e, i) => { e.position = i + 1; });
+    }
   }
 
   // Rough estimate: assume each agent handles a chat in ~5 minutes

@@ -5,6 +5,7 @@ interface RocketChatRoom {
   open?: boolean;
   servedBy?: { _id: string; username: string };
   v?: { token: string };
+  departmentId?: string;
   // Room creation time — used to order the queue correctly. Type is `unknown`
   // because Rocket.Chat doesn't serialize this consistently: some responses
   // send a plain ISO string, others send Mongo/BSON extended JSON
@@ -33,6 +34,7 @@ export function parseRcDate(value: unknown): number | undefined {
 
 export interface QueuedRoom {
   visitorToken: string;
+  departmentId: string;
   createdAt: number; // epoch ms, from room.ts
 }
 
@@ -94,9 +96,10 @@ export async function fetchQueuedRooms(): Promise<QueuedRoomsResult> {
       // A room is "queued" (waiting for human agent) when open and not yet served
       if (room.open && !room.servedBy) {
         roomIds.add(room._id);
-        if (room.v?.token) {
+        if (room.v?.token && room.departmentId) {
           addable.set(room._id, {
             visitorToken: room.v.token,
+            departmentId: room.departmentId,
             createdAt: parseRcDate(room.ts) ?? Date.now(),
           });
         }
@@ -115,6 +118,7 @@ export interface RoomInfo {
   servedBy?: unknown;
   createdAt?: number;
   visitorToken?: string;
+  departmentId?: string;
 }
 
 // Fetch a single room's live status directly from Rocket.Chat by roomId —
@@ -145,6 +149,7 @@ export async function fetchRoomInfo(roomId: string): Promise<RoomInfo | null> {
       servedBy: body.room.servedBy,
       createdAt: parseRcDate(body.room.ts),
       visitorToken: body.room.v?.token,
+      departmentId: body.room.departmentId,
     };
   } catch (err) {
     console.error('[rcapi] fetchRoomInfo error:', err);
@@ -220,6 +225,73 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
     console.error('[rcapi] fetchVisitorInfo error:', err);
     return null;
   }
+}
+
+interface RcDepartment {
+  _id: string;
+  name?: string;
+}
+
+interface RcDepartmentsResponse {
+  departments: RcDepartment[];
+  count: number;
+  offset: number;
+  total: number;
+  success: boolean;
+}
+
+// name (lowercased) -> { id, cachedAt } — departments rarely change, so we
+// avoid a round-trip to RC on every /visitors/register call.
+const departmentCache = new Map<string, { id: string; cachedAt: number }>();
+const DEPARTMENT_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Resolve a department's RC id by its display name (case-insensitive), so
+// callers can pass a human name (`fila`) instead of hardcoding RC's internal
+// id. Paginates through every department and matches exactly — RC's `text`
+// search filter isn't guaranteed to be an exact/case-insensitive match, and
+// the department list is small enough that a full scan is cheap and reliable.
+export async function findDepartmentIdByName(name: string): Promise<string | null> {
+  const key = name.trim().toLowerCase();
+  const cached = departmentCache.get(key);
+  if (cached && Date.now() - cached.cachedAt < DEPARTMENT_CACHE_TTL_MS) {
+    return cached.id;
+  }
+
+  const base = process.env.ROCKETCHAT_URL;
+  const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
+  const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
+  if (!base || !token || !userId) {
+    console.warn('[rcapi] Missing credentials — skipping findDepartmentIdByName');
+    return null;
+  }
+
+  let offset = 0;
+  try {
+    while (true) {
+      const url = `${base}/api/v1/livechat/department?count=${PAGE_SIZE}&offset=${offset}`;
+      const res = await fetch(url, {
+        headers: { 'X-Auth-Token': token, 'X-User-Id': userId },
+      });
+      if (!res.ok) break;
+
+      const body = await res.json() as RcDepartmentsResponse;
+      if (!body.success || !Array.isArray(body.departments)) break;
+
+      for (const dept of body.departments) {
+        if (dept.name?.trim().toLowerCase() === key) {
+          departmentCache.set(key, { id: dept._id, cachedAt: Date.now() });
+          return dept._id;
+        }
+      }
+
+      if (offset + body.count >= body.total) break;
+      offset += PAGE_SIZE;
+    }
+  } catch (err) {
+    console.error('[rcapi] findDepartmentIdByName error:', err);
+  }
+
+  return null;
 }
 
 export async function runReconciliation(): Promise<void> {

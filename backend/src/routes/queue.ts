@@ -79,7 +79,7 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
       queueState.markConnected(roomId, rc.visitorToken, buildAgentUrl(rc.visitorToken));
     } else {
       // Uses RC's real creation time so the position doesn't jump to the back.
-      queueState.enqueue(roomId, rc.visitorToken, rc.createdAt);
+      queueState.enqueue(roomId, rc.visitorToken, rc.departmentId ?? '', rc.createdAt);
     }
     entry = queueState.getEntryByRoomId(roomId);
   }
@@ -98,7 +98,7 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
     open,
     status,
     position: status === 'queued' ? entry?.position ?? null : null,
-    queueSize: status === 'queued' ? queueState.getQueuedCount() : null,
+    queueSize: status === 'queued' && entry ? queueState.getQueuedCount(entry.departmentId) : null,
     link,
   });
 });
@@ -136,7 +136,7 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
       queueState.markConnected(rc.roomId, token, buildAgentUrl(token));
     } else if (rc.status === 'queued') {
       // Usa a hora real de criação da RC pra posição não pular pro fim da fila.
-      queueState.enqueue(rc.roomId, token, rc.createdAt);
+      queueState.enqueue(rc.roomId, token, rc.departmentId ?? '', rc.createdAt);
     }
     entry = queueState.getEntry(token);
   }
@@ -154,7 +154,7 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
     open,
     status,
     position: status === 'queued' ? entry?.position ?? null : null,
-    queueSize: status === 'queued' ? queueState.getQueuedCount() : null,
+    queueSize: status === 'queued' && entry ? queueState.getQueuedCount(entry.departmentId) : null,
     link,
   });
 });
@@ -173,23 +173,24 @@ router.get('/:visitorToken', (req: Request, res: Response) => {
     ok: true,
     status: entry.status,
     position: entry.status === 'queued' ? entry.position : null,
-    queueSize: entry.status === 'queued' ? queueState.getQueuedCount() : null,
+    queueSize: entry.status === 'queued' ? queueState.getQueuedCount(entry.departmentId) : null,
     agentUrl: entry.agentUrl ?? null,
     enteredAt: entry.enteredAt,
   });
 });
 
-async function checkRcRoomStatus(visitorToken: string): Promise<{ status: 'queued' | 'connected' | 'none'; roomId?: string; createdAt?: number }> {
+async function checkRcRoomStatus(visitorToken: string): Promise<{ status: 'queued' | 'connected' | 'none'; roomId?: string; departmentId?: string; createdAt?: number }> {
   const base = process.env.ROCKETCHAT_URL;
   try {
     const res = await fetch(`${base}/api/v1/livechat/room?token=${encodeURIComponent(visitorToken)}`);
     if (!res.ok) return { status: 'none' };
-    const body = await res.json() as { room?: { _id?: string; open?: boolean; servedBy?: unknown; ts?: unknown }; success?: boolean };
+    const body = await res.json() as { room?: { _id?: string; open?: boolean; servedBy?: unknown; departmentId?: string; ts?: unknown }; success?: boolean };
     const room = body.room;
     if (!room?._id || !room.open) return { status: 'none' };
     return {
       status: room.servedBy ? 'connected' : 'queued',
       roomId: room._id,
+      departmentId: room.departmentId,
       createdAt: parseRcDate(room.ts),
     };
   } catch {
@@ -224,7 +225,7 @@ router.get('/stream/:visitorToken', (req: Request, res: Response) => {
     if (entry.status === 'queued') {
       send('queue_update', {
         position: entry.position,
-        queueSize: queueState.getQueuedCount(),
+        queueSize: queueState.getQueuedCount(entry.departmentId),
         estimatedWaitSeconds: undefined,
       });
     } else if (entry.status === 'connected' && entry.agentUrl !== undefined) {
@@ -233,14 +234,14 @@ router.get('/stream/:visitorToken', (req: Request, res: Response) => {
     }
   } else {
     // No local state — check RC directly to recover from backend restarts
-    checkRcRoomStatus(visitorToken).then(({ status, roomId, createdAt }) => {
+    checkRcRoomStatus(visitorToken).then(({ status, roomId, departmentId, createdAt }) => {
       if (status === 'connected' && roomId) {
         // Agent already took the chat — immediately open it
         queueState.markConnected(roomId, visitorToken, buildAgentUrl(visitorToken));
       } else if (status === 'queued' && roomId) {
         // Still in queue — re-add to local state so position tracking works,
         // using RC's real creation time so the position doesn't jump to the back
-        queueState.enqueue(roomId, visitorToken, createdAt);
+        queueState.enqueue(roomId, visitorToken, departmentId ?? '', createdAt);
       } else {
         send('waiting', { message: 'Aguardando registro na fila...' });
       }

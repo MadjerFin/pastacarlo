@@ -1,12 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
-import { findContactTokenByPhone } from '../services/rocketchatApi';
+import { findContactTokenByPhone, findDepartmentIdByName } from '../services/rocketchatApi';
 
 const router = Router();
 
-const SAPIOS_DEPT_ID = '69316b35a79d2ae8ad44383f';
+// Fallback quando a requisição não informa `fila` — mantém os links antigos
+// (sem esse parâmetro) funcionando como antes.
+const DEFAULT_DEPARTMENT_ID = '69316b35a79d2ae8ad44383f';
 
-async function registerVisitor(name: string | undefined, phone: string, token: string): Promise<string> {
+async function registerVisitor(name: string | undefined, phone: string, token: string, departmentId: string): Promise<string> {
   const base = process.env.ROCKETCHAT_URL;
   const res = await fetch(`${base}/api/v1/livechat/visitor`, {
     method: 'POST',
@@ -20,7 +22,7 @@ async function registerVisitor(name: string | undefined, phone: string, token: s
         ...(name ? { name } : {}),
         token,
         phone, // native field — required for omnichannel/contact.search to find this visitor later
-        department: SAPIOS_DEPT_ID,
+        department: departmentId,
         customFields: [{ key: 'phone', value: phone, overwrite: true }],
       },
     }),
@@ -41,9 +43,13 @@ async function openRoom(visitorToken: string): Promise<string> {
   return body.room?._id ?? '';
 }
 
-// POST /visitors/register
+// POST /visitors/register  body: { name, phone, fila? }
+// `fila` é o nome do departamento como cadastrado na RC (ex: "Suporte") —
+// resolvido dinamicamente pra um ID via findDepartmentIdByName, então não
+// precisa hardcodear/expor o ID interno da RC. Omitido, cai no departamento
+// padrão (mantém os links antigos, sem esse parâmetro, funcionando).
 router.post('/register', async (req: Request, res: Response) => {
-  const { name, phone } = req.body as { name?: string; phone?: string };
+  const { name, phone, fila } = req.body as { name?: string; phone?: string; fila?: string };
 
   if (!name || !phone) {
     res.status(400).json({ ok: false, error: 'name e phone são obrigatórios' });
@@ -51,7 +57,17 @@ router.post('/register', async (req: Request, res: Response) => {
   }
 
   const cleanPhone = phone.replace(/\D/g, '');
-  console.log(`[visitors] registering name="${name}" phone="${cleanPhone}"`);
+  console.log(`[visitors] registering name="${name}" phone="${cleanPhone}" fila="${fila ?? '(padrão)'}"`);
+
+  let departmentId = DEFAULT_DEPARTMENT_ID;
+  if (fila) {
+    const resolved = await findDepartmentIdByName(fila);
+    if (!resolved) {
+      res.status(400).json({ ok: false, error: 'department_not_found' });
+      return;
+    }
+    departmentId = resolved;
+  }
 
   try {
     // 1. Check if visitor already exists in RC by phone (returns their RC-generated token)
@@ -64,9 +80,9 @@ router.post('/register', async (req: Request, res: Response) => {
     // 2. Register/update visitor in RC (idempotent — RC upserts by token).
     // Only set the name for a genuinely new phone; a returning visitor keeps
     // whatever name RC already has on file (see registerVisitor for why).
-    const confirmedToken = await registerVisitor(existingToken ? undefined : name, cleanPhone, tokenToUse);
+    const confirmedToken = await registerVisitor(existingToken ? undefined : name, cleanPhone, tokenToUse, departmentId);
 
-    // 4. Open (or reopen) the livechat room in Sapios dept
+    // 4. Open (or reopen) the livechat room in the resolved department
     const roomId = await openRoom(confirmedToken);
     console.log(`[visitors] room opened roomId=${roomId} token=${confirmedToken.slice(0, 12)}...`);
 
