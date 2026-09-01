@@ -17,10 +17,9 @@ async function registerVisitor(name: string | undefined, phone: string, token: s
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       visitor: {
-        // Omit `name` entirely when re-registering a known phone — RC keeps the
-        // stored value untouched. Passing it would let anyone silently rename
-        // (and thereby appear to "become") an existing contact just by using a
-        // different `nome` in the URL for a phone that's already on record.
+        // The latest name always overwrites the one on file — safe now that
+        // this route requires the bot's secret (only the bot decides what
+        // name to send, taken fresh from the current conversation).
         ...(name ? { name } : {}),
         token,
         phone, // native field — required for omnichannel/contact.search to find this visitor later
@@ -83,9 +82,9 @@ router.post('/register', requireBotSecret, async (req: Request, res: Response) =
     console.log(`[visitors] ${existingToken ? 'existing' : 'new'} visitor token=${tokenToUse.slice(0, 12)}...`);
 
     // 2. Register/update visitor in RC (idempotent — RC upserts by token).
-    // Only set the name for a genuinely new phone; a returning visitor keeps
-    // whatever name RC already has on file (see registerVisitor for why).
-    const confirmedToken = await registerVisitor(existingToken ? undefined : name, cleanPhone, tokenToUse, departmentId);
+    // Always sends the name, so it overwrites whatever RC had on file —
+    // the visitor's most recent entry wins.
+    const confirmedToken = await registerVisitor(name, cleanPhone, tokenToUse, departmentId);
 
     // 4. Open (or reopen) the livechat room in the resolved department
     const roomId = await openRoom(confirmedToken);
