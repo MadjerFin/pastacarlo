@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { queueState } from '../services/queueState';
-import { fetchRoomInfo, findContactTokenByPhone } from '../services/rocketchatApi';
+import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo } from '../services/rocketchatApi';
 import { botRateLimit } from '../middleware/botRateLimit';
 
 const router = Router();
@@ -10,6 +10,50 @@ const router = Router();
 function buildAgentUrl(visitorToken: string): string {
   const livechatBaseUrl = process.env.ROCKETCHAT_LIVECHAT_URL ?? `${process.env.ROCKETCHAT_URL ?? ''}/livechat`;
   return `${livechatBaseUrl}?token=${encodeURIComponent(visitorToken)}`;
+}
+
+function appBaseUrl(): string {
+  return (process.env.FRONTEND_URL ?? 'http://localhost:5173').replace(/\/$/, '');
+}
+
+// Página do próprio app (WaitingRoom) — serve tanto pra fila quanto pra chat
+// já conectado: ela abre um SSE e troca de tela sozinha (fila → chat) sem
+// precisar de outro link. nome/tel são opcionais, mas sem eles o botão
+// "Iniciar novo atendimento" dentro do chat (se a sala fechar depois) cai
+// num reload que reabre a mesma sala fechada em vez de oferecer uma nova.
+function buildAppLink(visitorToken: string, roomId?: string, name?: string, phone?: string): string {
+  const params = new URLSearchParams({ token: visitorToken });
+  if (roomId) params.set('room', roomId);
+  if (name) params.set('nome', name);
+  if (phone) params.set('tel', phone);
+  return `${appBaseUrl()}/?${params.toString()}`;
+}
+
+// Fluxo de registro/abertura de sala nova (EntryPage) — exige nome e telefone.
+function buildEntrarLink(name: string, phone: string): string {
+  const params = new URLSearchParams({ nome: name, tel: phone });
+  return `${appBaseUrl()}/entrar?${params.toString()}`;
+}
+
+// Resolve o link "certo" pro status atual, pra o chamador (bot) não precisar
+// montar URL nenhuma na mão.
+async function resolveStatusLink(
+  status: 'queued' | 'connected' | 'closed',
+  visitorToken: string | undefined,
+  roomId: string | null,
+  knownPhone?: string,
+): Promise<string | null> {
+  if (!visitorToken) return null;
+
+  const info = await fetchVisitorInfo(visitorToken);
+  const phone = knownPhone ?? info?.phone;
+
+  if (status === 'closed') {
+    if (!info?.name || !phone) return null;
+    return buildEntrarLink(info.name, phone);
+  }
+
+  return buildAppLink(visitorToken, roomId ?? undefined, info?.name, phone);
 }
 
 // GET /queue/room/:roomId — posição na fila e status aberto/fechado da sala,
@@ -43,6 +87,8 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
   const open = rc?.open ?? (entry?.status === 'queued' || entry?.status === 'connected');
   const status: 'queued' | 'connected' | 'closed' =
     entry?.status ?? (open ? (rc?.servedBy ? 'connected' : 'queued') : 'closed');
+  const visitorToken = entry?.visitorToken ?? rc?.visitorToken;
+  const link = await resolveStatusLink(status, visitorToken, roomId);
 
   res.json({
     ok: true,
@@ -51,7 +97,7 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
     status,
     position: status === 'queued' ? entry?.position ?? null : null,
     queueSize: status === 'queued' ? queueState.getQueuedCount() : null,
-    agentUrl: status === 'connected' ? entry?.agentUrl ?? null : null,
+    link,
   });
 });
 
@@ -96,6 +142,7 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
     : rc.status !== 'none';
   const status: 'queued' | 'connected' | 'closed' =
     entry?.status ?? (rc.status === 'none' ? 'closed' : rc.status);
+  const link = await resolveStatusLink(status, token, entry?.roomId ?? rc.roomId ?? null, cleanPhone);
 
   res.json({
     ok: true,
@@ -104,7 +151,7 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
     status,
     position: status === 'queued' ? entry?.position ?? null : null,
     queueSize: status === 'queued' ? queueState.getQueuedCount() : null,
-    agentUrl: status === 'connected' ? entry?.agentUrl ?? null : null,
+    link,
   });
 });
 

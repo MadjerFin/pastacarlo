@@ -61,6 +61,21 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
   }, [roomId, visitorToken]);
 
   const mergeMessages = useCallback((incoming: RcMessage[]) => {
+    if (!incoming.length) return;
+
+    // Advance the "since" cursor past every message seen (system ones included),
+    // otherwise a poll that only returns a system message keeps re-fetching it.
+    for (const m of incoming) {
+      if (!lastTsRef.current || m.ts > lastTsRef.current) lastTsRef.current = m.ts;
+    }
+
+    // RC sends room closure (by agent OR visitor) as a system message with this
+    // type. Without watching for it, the visitor only learns the chat ended
+    // when they try to send something and get a 409 back.
+    if (incoming.some(m => m.t === 'livechat-close')) {
+      setRoomClosed(true);
+    }
+
     // Filter out system messages (t field = event type, e.g. 'uj', 'command'/"connected",
     // 'livechat-close'/"Closed by visitor" — these carry real text but aren't chat content)
     const valid = incoming.filter(m => !m.t);
@@ -71,9 +86,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
       const seen = new Set(prev.map(m => m._id));
       const fresh = sorted.filter(m => !seen.has(m._id));
       if (!fresh.length) return prev;
-      const next = [...prev, ...fresh];
-      lastTsRef.current = fresh[fresh.length - 1].ts;
-      return next;
+      return [...prev, ...fresh];
     });
     scrollToBottom();
   }, []);

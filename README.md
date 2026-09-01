@@ -126,10 +126,14 @@ Frontend recebe "connected"  ──►  redireciona para URL do livechat
 |--------|------|-----------|
 | POST | `/webhooks/rocketchat` | Recebe eventos do Omnichannel |
 | GET | `/queue/:visitorToken` | Snapshot do status atual |
-| GET | `/queue/room/:roomId` | Posição na fila, status (`queued`/`connected`/`closed`) e `agentUrl` quando conectado, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |
+| GET | `/queue/room/:roomId` | Posição na fila, status (`queued`/`connected`/`closed`) e `link` correspondente, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |
 | POST | `/queue/phone` `{ phone }` | Idem, mas resolvendo o visitante pelo telefone. É POST (telefone no body, não na URL) para não deixar o número em logs de acesso/proxies; rate limit 20 req/min por IP |
 | GET | `/queue/stream/:visitorToken` | SSE com atualizações em tempo real |
 | GET | `/health` | Health check |
+
+`link` já vem pronto pra redirecionar, de acordo com o `status`:
+- `queued`/`connected` → página do próprio app (`/?token=...&room=...&nome=...&tel=...`) — ela troca de tela sozinha (fila → chat) via SSE assim que um agente assumir
+- `closed` → fluxo de abrir sala nova (`/entrar?nome=...&tel=...`) — vem `null` se o nome do visitante não puder ser resolvido na RC
 
 ### Eventos SSE emitidos
 

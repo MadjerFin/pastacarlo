@@ -143,6 +143,47 @@ export async function findContactTokenByPhone(phone: string): Promise<string | n
   }
 }
 
+export interface VisitorInfo {
+  name?: string;
+  phone?: string;
+}
+
+// Fetch a visitor's name/phone by their RC token — used to prefill the
+// "abrir nova sala" link (nome+tel são obrigatórios em /entrar) when a
+// visitor's room is closed.
+export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInfo | null> {
+  const base = process.env.ROCKETCHAT_URL;
+  const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
+  const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
+
+  if (!base || !token || !userId) {
+    console.warn('[rcapi] Missing credentials — skipping fetchVisitorInfo');
+    return null;
+  }
+
+  try {
+    const url = `${base}/api/v1/livechat/visitor/${encodeURIComponent(visitorToken)}`;
+    const res = await fetch(url, {
+      headers: { 'X-Auth-Token': token, 'X-User-Id': userId },
+    });
+    if (!res.ok) return null;
+
+    const body = await res.json() as {
+      visitor?: { name?: string; phone?: string | Array<{ phoneNumber?: string }> };
+      success?: boolean;
+    };
+    if (!body.success || !body.visitor) return null;
+
+    const rawPhone = body.visitor.phone;
+    const phone = typeof rawPhone === 'string' ? rawPhone : rawPhone?.[0]?.phoneNumber;
+
+    return { name: body.visitor.name, phone };
+  } catch (err) {
+    console.error('[rcapi] fetchVisitorInfo error:', err);
+    return null;
+  }
+}
+
 export async function runReconciliation(): Promise<void> {
   console.log('[rcapi] starting reconciliation...');
   try {
