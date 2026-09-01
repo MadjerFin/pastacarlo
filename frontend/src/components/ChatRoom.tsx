@@ -37,6 +37,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
   const [error, setError] = useState<string | null>(null);
   const [roomClosed, setRoomClosed] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [reopening, setReopening] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
@@ -229,6 +230,27 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
     };
   }, []);
 
+  async function reopenConversation() {
+    setReopening(true);
+    try {
+      const res = await fetch('/visitors/reopen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: visitorToken }),
+      });
+      const data = await res.json() as { ok: boolean; link?: string };
+      if (data.ok && data.link) {
+        window.location.href = data.link;
+        return;
+      }
+      window.location.reload();
+    } catch {
+      window.location.reload();
+    } finally {
+      setReopening(false);
+    }
+  }
+
   async function closeConversation() {
     if (!window.confirm('Tem certeza que deseja encerrar esta conversa?')) return;
     setClosing(true);
@@ -348,17 +370,11 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, visitorPho
           <span>Esta conversa foi encerrada.</span>
           <button
             type="button"
-            style={S.reloadBtn}
-            onClick={() => {
-              if (visitorName && visitorPhone) {
-                const params = new URLSearchParams({ nome: visitorName, tel: visitorPhone });
-                window.location.href = `/entrar?${params.toString()}`;
-              } else {
-                window.location.reload();
-              }
-            }}
+            style={{ ...S.reloadBtn, opacity: reopening ? 0.6 : 1 }}
+            disabled={reopening}
+            onClick={reopenConversation}
           >
-            Iniciar novo atendimento
+            {reopening ? 'Abrindo...' : 'Iniciar novo atendimento'}
           </button>
         </div>
       )}

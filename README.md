@@ -125,7 +125,8 @@ Frontend recebe "connected"  ──►  redireciona para URL do livechat
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | POST | `/webhooks/rocketchat` | Recebe eventos do Omnichannel |
-| POST | `/visitors/register` `{ name, phone, fila? }` | Abre/reabre a sala do visitante — protegido por secret (`Authorization: Bearer <token>`), só o bot chama |
+| POST | `/visitors/register` `{ name, phone, fila? }` | Abre/reabre a sala do visitante por telefone — protegido por secret (`Authorization: Bearer <token>`), só o bot chama |
+| POST | `/visitors/reopen` `{ token }` | Reabre uma sala nova pro visitante que já tem seu próprio token (ex: botão "Iniciar novo atendimento" no chat) — sem secret, pois o token já prova quem é |
 | GET | `/queue/:visitorToken` | Snapshot do status atual |
 | GET | `/queue/room/:roomId` | Posição na fila, status (`queued`/`connected`/`closed`) e `link` correspondente, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |
 | POST | `/queue/phone` `{ phone }` | Idem, mas resolvendo o visitante pelo telefone. É POST (telefone no body, não na URL) para não deixar o número em logs de acesso/proxies; rate limit 20 req/min por IP |

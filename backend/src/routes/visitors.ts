@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
-import { findContactTokenByPhone, findDepartmentIdByName } from '../services/rocketchatApi';
+import { findContactTokenByPhone, findDepartmentIdByName, fetchVisitorInfo } from '../services/rocketchatApi';
 import { buildAppLink } from '../services/links';
 import { requireBotSecret } from '../middleware/requireBotSecret';
 
@@ -96,6 +96,37 @@ router.post('/register', requireBotSecret, async (req: Request, res: Response) =
   } catch (err) {
     console.error('[visitors] register error:', err);
     res.status(500).json({ ok: false, error: 'Erro ao registrar visitante' });
+  }
+});
+
+// POST /visitors/reopen  body: { token }
+// Lets a visitor who's still sitting on their own chat page (or bookmarked
+// its link) start a new room after theirs closed — without the bot's
+// secret. Safe without one: `token` is a long random RC-issued value, not a
+// guessable phone number, so possessing it already proves you're that
+// visitor. Never looks anyone up by phone/name — that's the whole point.
+router.post('/reopen', async (req: Request, res: Response) => {
+  const { token } = req.body as { token?: string };
+  if (!token) {
+    res.status(400).json({ ok: false, error: 'token é obrigatório' });
+    return;
+  }
+
+  try {
+    const info = await fetchVisitorInfo(token);
+    if (!info) {
+      res.status(404).json({ ok: false, error: 'visitor_not_found' });
+      return;
+    }
+
+    const roomId = await openRoom(token);
+    console.log(`[visitors] reopened roomId=${roomId} token=${token.slice(0, 12)}...`);
+
+    const link = buildAppLink(token, roomId || undefined, info.name, info.phone);
+    res.json({ ok: true, token, roomId, link });
+  } catch (err) {
+    console.error('[visitors] reopen error:', err);
+    res.status(500).json({ ok: false, error: 'Erro ao reabrir atendimento' });
   }
 });
 
