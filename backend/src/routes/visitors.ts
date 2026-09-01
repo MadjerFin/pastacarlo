@@ -50,9 +50,9 @@ async function openRoom(visitorToken: string): Promise<string> {
 // resolvido dinamicamente pra um ID via findDepartmentIdByName, então não
 // precisa hardcodear/expor o ID interno da RC. Omitido, cai no departamento
 // padrão (mantém os links antigos, sem esse parâmetro, funcionando).
-// Protegido por secret (X-Bot-Token) — só o bot pode chamar. Sem isso,
-// qualquer um que soubesse um telefone alheio reabriria a conversa daquela
-// pessoa (histórico + capacidade de mandar mensagem em nome dela).
+// Protegido por secret (Authorization: Bearer) — só o bot pode chamar. Sem
+// isso, qualquer um que soubesse um telefone alheio reabriria a conversa
+// daquela pessoa (histórico + capacidade de mandar mensagem em nome dela).
 router.post('/register', requireBotSecret, async (req: Request, res: Response) => {
   const { name, phone, fila } = req.body as { name?: string; phone?: string; fila?: string };
 

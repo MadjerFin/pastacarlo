@@ -125,7 +125,7 @@ Frontend recebe "connected"  ──►  redireciona para URL do livechat
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | POST | `/webhooks/rocketchat` | Recebe eventos do Omnichannel |
-| POST | `/visitors/register` `{ name, phone, fila? }` | Abre/reabre a sala do visitante — protegido por secret (`X-Bot-Token`), só o bot chama |
+| POST | `/visitors/register` `{ name, phone, fila? }` | Abre/reabre a sala do visitante — protegido por secret (`Authorization: Bearer <token>`), só o bot chama |
 | GET | `/queue/:visitorToken` | Snapshot do status atual |
 | GET | `/queue/room/:roomId` | Posição na fila, status (`queued`/`connected`/`closed`) e `link` correspondente, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |
 | POST | `/queue/phone` `{ phone }` | Idem, mas resolvendo o visitante pelo telefone. É POST (telefone no body, não na URL) para não deixar o número em logs de acesso/proxies; rate limit 20 req/min por IP |
@@ -171,7 +171,7 @@ O backend serve os arquivos estáticos do frontend (`frontend/dist`) diretamente
 4. Depois do primeiro deploy, você terá uma URL pública (ex: `https://pastacarlo.onrender.com`). Ajuste:
    - `FRONTEND_URL` no ambiente do Render para essa mesma URL (CORS deixa de ser um problema por serem mesma origem, mas mantenha por consistência).
    - O webhook no Rocket.Chat (Admin → Omnichannel → Webhooks) para `https://pastacarlo.onrender.com/webhooks/rocketchat`.
-5. `POST /visitors/register` exige `X-Bot-Token` (= `BOT_API_SECRET`) — só o bot pode abrir/reabrir salas agora. A página `/entrar?nome=X&tel=Y` chama essa rota do navegador e por isso **não funciona mais sozinha**: sem o header, ela recebe `401` e mostra a tela de erro (não deixa reaproveitar a conversa de outra pessoa só por saber o telefone).
+5. `POST /visitors/register` exige `Authorization: Bearer <BOT_API_SECRET>` — só o bot pode abrir/reabrir salas agora. A página `/entrar?nome=X&tel=Y` chama essa rota do navegador e por isso **não funciona mais sozinha**: sem o header, ela recebe `401` e mostra a tela de erro (não deixa reaproveitar a conversa de outra pessoa só por saber o telefone).
 
 ### Escala
 
