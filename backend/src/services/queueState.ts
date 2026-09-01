@@ -71,8 +71,10 @@ class QueueState {
   remove(roomId: string): void {
     const token = this.roomIndex.get(roomId);
     if (!token) return;
+    const wasQueued = this.entries.get(token)?.status === 'queued';
     this.entries.delete(token);
     this.roomIndex.delete(roomId);
+    if (wasQueued) this.notifyRemoved(token);
     this.recalcPositions();
     this.broadcastQueueUpdate();
     console.log(`[queue] removed  roomId=${roomId} token=${token}`);
@@ -97,6 +99,7 @@ class QueueState {
       if (entry?.status === 'queued' && !activeRoomIds.has(roomId)) {
         this.entries.delete(token);
         this.roomIndex.delete(roomId);
+        this.notifyRemoved(token);
         changed = true;
         console.log(`[queue] reconcile removed stale roomId=${roomId}`);
       }
@@ -162,6 +165,26 @@ class QueueState {
     if (!clients) return;
     for (const res of clients) {
       this.sendSse(res, 'connected', { agentUrl, roomId });
+    }
+  }
+
+  // Tells a visitor's open SSE tab(s) their queue entry was evicted (room
+  // closed, or no longer seen as queued by RC) and closes the stream. Without
+  // this, an evicted client's tab keeps showing whatever position/queueSize
+  // it last received — frozen forever, since nothing else notifies it once
+  // it's no longer in `entries` to receive future broadcastQueueUpdate calls.
+  // Closing the connection makes the browser's EventSource auto-reconnect,
+  // which re-runs the self-heal check with the visitor's current real status.
+  private notifyRemoved(token: string): void {
+    const clients = this.sseClients.get(token);
+    if (!clients) return;
+    for (const res of clients) {
+      this.sendSse(res, 'waiting', { message: 'Verificando sua posição na fila...' });
+      try {
+        res.end();
+      } catch {
+        // already closed
+      }
     }
   }
 
