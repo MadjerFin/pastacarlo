@@ -5,6 +5,13 @@ import { botRateLimit } from '../middleware/botRateLimit';
 
 const router = Router();
 
+// URL do widget de livechat com o token do visitante — usada para redirecionar
+// quem já está com um agente conectado direto pro chat.
+function buildAgentUrl(visitorToken: string): string {
+  const livechatBaseUrl = process.env.ROCKETCHAT_LIVECHAT_URL ?? `${process.env.ROCKETCHAT_URL ?? ''}/livechat`;
+  return `${livechatBaseUrl}?token=${encodeURIComponent(visitorToken)}`;
+}
+
 // GET /queue/room/:roomId — posição na fila e status aberto/fechado da sala,
 // identificados pelo roomId do Rocket.Chat (não pelo visitorToken).
 router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) => {
@@ -18,11 +25,16 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
     return;
   }
 
-  // Self-heal: RC knows about a queued room we don't (backend restart, missed
-  // webhook) — re-add it using RC's real creation time so it lands in the
-  // correct position instead of jumping to the back of the queue.
-  if (!entry && rc?.open && !rc.servedBy && rc.visitorToken) {
-    queueState.enqueue(roomId, rc.visitorToken, rc.createdAt);
+  // Self-heal: RC knows about a room we don't (backend restart, missed
+  // webhook) — re-add it so state (position, agentUrl) is available locally
+  // instead of just derived from RC on every call.
+  if (!entry && rc?.open && rc.visitorToken) {
+    if (rc.servedBy) {
+      queueState.markConnected(roomId, rc.visitorToken, buildAgentUrl(rc.visitorToken));
+    } else {
+      // Uses RC's real creation time so the position doesn't jump to the back.
+      queueState.enqueue(roomId, rc.visitorToken, rc.createdAt);
+    }
     entry = queueState.getEntryByRoomId(roomId);
   }
 
@@ -39,6 +51,7 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
     status,
     position: status === 'queued' ? entry?.position ?? null : null,
     queueSize: status === 'queued' ? queueState.getQueuedCount() : null,
+    agentUrl: status === 'connected' ? entry?.agentUrl ?? null : null,
   });
 });
 
@@ -66,10 +79,15 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
   let entry = queueState.getEntry(token);
   const rc = await checkRcRoomStatus(token);
 
-  // Self-heal: RC sabe de uma sala em fila que ainda não conhecemos
-  // localmente (reinício do backend, webhook perdido).
-  if (!entry && rc.status === 'queued' && rc.roomId) {
-    queueState.enqueue(rc.roomId, token, rc.createdAt);
+  // Self-heal: RC sabe de uma sala que ainda não conhecemos localmente
+  // (reinício do backend, webhook perdido).
+  if (!entry && rc.roomId) {
+    if (rc.status === 'connected') {
+      queueState.markConnected(rc.roomId, token, buildAgentUrl(token));
+    } else if (rc.status === 'queued') {
+      // Usa a hora real de criação da RC pra posição não pular pro fim da fila.
+      queueState.enqueue(rc.roomId, token, rc.createdAt);
+    }
     entry = queueState.getEntry(token);
   }
 
@@ -86,6 +104,7 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
     status,
     position: status === 'queued' ? entry?.position ?? null : null,
     queueSize: status === 'queued' ? queueState.getQueuedCount() : null,
+    agentUrl: status === 'connected' ? entry?.agentUrl ?? null : null,
   });
 });
 
@@ -166,8 +185,7 @@ router.get('/stream/:visitorToken', (req: Request, res: Response) => {
     checkRcRoomStatus(visitorToken).then(({ status, roomId, createdAt }) => {
       if (status === 'connected' && roomId) {
         // Agent already took the chat — immediately open it
-        const agentUrl = '';
-        queueState.markConnected(roomId, visitorToken, agentUrl);
+        queueState.markConnected(roomId, visitorToken, buildAgentUrl(visitorToken));
       } else if (status === 'queued' && roomId) {
         // Still in queue — re-add to local state so position tracking works,
         // using RC's real creation time so the position doesn't jump to the back
