@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { queueState } from '../services/queueState';
-import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, fetchOpenRoomForVisitorId } from '../services/rocketchatApi';
+import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, fetchOpenRoomForVisitorToken } from '../services/rocketchatApi';
 import { buildAgentUrl, buildAppLink, buildEntrarLink } from '../services/links';
 import { botRateLimit } from '../middleware/botRateLimit';
 
@@ -153,14 +153,11 @@ router.get('/:visitorToken', (req: Request, res: Response) => {
 // Read-only status check — deliberately does NOT call RC's GET /livechat/room?
 // token=... (that's what visitors.ts's openRoom() uses to actually start/resume
 // a chat, and it creates a new room as a side effect when the visitor has
-// none). This resolves the visitor's RC id first, then asks the admin rooms
-// listing whether they have an open room — never creates anything, so a bot
-// or a self-heal check can't accidentally open a room the visitor never asked for.
+// none). Asks the admin rooms listing whether they have an open room —
+// never creates anything, so a bot or a self-heal check can't accidentally
+// open a room the visitor never asked for.
 async function checkRcRoomStatus(visitorToken: string): Promise<{ status: 'queued' | 'connected' | 'none'; roomId?: string; departmentId?: string; createdAt?: number }> {
-  const info = await fetchVisitorInfo(visitorToken);
-  if (!info?.id) return { status: 'none' };
-
-  const room = await fetchOpenRoomForVisitorId(info.id);
+  const room = await fetchOpenRoomForVisitorToken(visitorToken);
   if (!room?.open) return { status: 'none' };
 
   return {

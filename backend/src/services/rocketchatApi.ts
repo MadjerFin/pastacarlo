@@ -247,41 +247,57 @@ export interface OpenRoomLookup {
 // NOT using GET /livechat/room?token=... (the endpoint openRoom() in
 // visitors.ts uses to actually start/resume a chat) — that endpoint creates a
 // brand new room as a side effect when the visitor has none, which is exactly
-// wrong for a caller that's just polling status (self-heal, bot checks). This
-// uses the admin rooms listing filtered by visitorId instead, which only ever
-// reads.
-export async function fetchOpenRoomForVisitorId(visitorId: string): Promise<OpenRoomLookup | null> {
+// wrong for a caller that's just polling status (self-heal, bot checks).
+//
+// This scans the same admin "all open rooms" listing fetchQueuedRooms()
+// already uses successfully, matching by `room.v.token` client-side — an
+// earlier version tried filtering server-side with `?visitorId=`, but that
+// silently failed to find rooms that were genuinely open (confirmed live: a
+// visitor's room stayed open in RC — reopening it via openRoom() kept
+// returning the same roomId — while this check reported no open room at
+// all, which broke both "you're connected" detection and status checks).
+export async function fetchOpenRoomForVisitorToken(visitorToken: string): Promise<OpenRoomLookup | null> {
   const base = process.env.ROCKETCHAT_URL;
   const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
   const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
 
   if (!base || !token || !userId) {
-    console.warn('[rcapi] Missing credentials — skipping fetchOpenRoomForVisitorId');
+    console.warn('[rcapi] Missing credentials — skipping fetchOpenRoomForVisitorToken');
     return null;
   }
 
+  let offset = 0;
   try {
-    const url = `${base}/api/v1/livechat/rooms?visitorId=${encodeURIComponent(visitorId)}&open=true&count=1`;
-    const res = await fetch(url, {
-      headers: { 'X-Auth-Token': token, 'X-User-Id': userId },
-    });
-    if (!res.ok) return null;
+    while (true) {
+      const url = `${base}/api/v1/livechat/rooms?open=true&count=${PAGE_SIZE}&offset=${offset}`;
+      const res = await fetch(url, {
+        headers: { 'X-Auth-Token': token, 'X-User-Id': userId },
+      });
+      if (!res.ok) return null;
 
-    const body = await res.json() as { rooms?: RocketChatRoom[]; success?: boolean };
-    const room = body.rooms?.[0];
-    if (!body.success || !room) return null;
+      const body = await res.json() as RocketChatRoomsResponse;
+      if (!body.success || !Array.isArray(body.rooms)) return null;
 
-    return {
-      roomId: room._id,
-      open: !!room.open,
-      servedBy: room.servedBy,
-      departmentId: room.departmentId,
-      createdAt: parseRcDate(room.ts),
-    };
+      const match = body.rooms.find((room) => room.v?.token === visitorToken);
+      if (match) {
+        return {
+          roomId: match._id,
+          open: !!match.open,
+          servedBy: match.servedBy,
+          departmentId: match.departmentId,
+          createdAt: parseRcDate(match.ts),
+        };
+      }
+
+      if (offset + body.count >= body.total) break;
+      offset += PAGE_SIZE;
+    }
   } catch (err) {
-    console.error('[rcapi] fetchOpenRoomForVisitorId error:', err);
+    console.error('[rcapi] fetchOpenRoomForVisitorToken error:', err);
     return null;
   }
+
+  return null;
 }
 
 interface RcDepartment {
