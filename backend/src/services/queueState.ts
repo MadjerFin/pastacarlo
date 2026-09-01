@@ -80,13 +80,21 @@ class QueueState {
 
   // ── Reconciliation (called from the periodic job) ─────────────────────────
 
-  reconcile(queuedRooms: Map<string, { visitorToken: string; createdAt: number }>): void {
+  // `activeRoomIds` is every room RC still has open+unserved — the ground truth
+  // for removal. `addable` is the subset of those where we could also resolve a
+  // visitor token, usable for self-heal (re-adding). These are kept separate
+  // because the RC listing endpoint doesn't always populate the visitor token
+  // per room; treating its absence as "not queued" would wrongly evict a room
+  // that's still genuinely waiting, only for it to reappear as position 1 the
+  // next time its visitor's tab (re)connects — since by then it'd be the only
+  // entry left locally.
+  reconcile(activeRoomIds: Set<string>, addable: Map<string, { visitorToken: string; createdAt: number }>): void {
     let changed = false;
 
     // Remove entries for rooms that are no longer in the Rocket.Chat queue
     for (const [roomId, token] of this.roomIndex.entries()) {
       const entry = this.entries.get(token);
-      if (entry?.status === 'queued' && !queuedRooms.has(roomId)) {
+      if (entry?.status === 'queued' && !activeRoomIds.has(roomId)) {
         this.entries.delete(token);
         this.roomIndex.delete(roomId);
         changed = true;
@@ -97,7 +105,7 @@ class QueueState {
     // Self-heal: add rooms RC has queued but we don't know about (e.g. after a
     // backend restart, or a missed webhook), using RC's real creation time so
     // they land in the correct position instead of jumping to the back.
-    for (const [roomId, { visitorToken, createdAt }] of queuedRooms.entries()) {
+    for (const [roomId, { visitorToken, createdAt }] of addable.entries()) {
       if (!this.roomIndex.has(roomId)) {
         this.enqueue(roomId, visitorToken, createdAt);
         changed = true;

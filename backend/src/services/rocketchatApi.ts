@@ -24,19 +24,32 @@ interface RocketChatRoomsResponse {
 
 const PAGE_SIZE = 50;
 
-// Fetch open rooms that have no agent assigned yet (truly queued), keyed by
-// roomId with the visitor token and real creation time — needed so the local
-// queue can be rebuilt (e.g. after a backend restart) in the same order RC
-// actually queued them, not the order we happen to observe them.
-export async function fetchQueuedRooms(): Promise<Map<string, QueuedRoom>> {
+export interface QueuedRoomsResult {
+  // Every open+unserved roomId — the ground truth for "is this room still
+  // queued", used to decide what to remove. Doesn't depend on the listing
+  // endpoint including a visitor token, which it may not always populate.
+  roomIds: Set<string>;
+  // Subset of the above where we could also resolve a visitor token/creation
+  // time — only these can be used to self-heal (re-add) a missing entry.
+  addable: Map<string, QueuedRoom>;
+}
+
+// Fetch open rooms that have no agent assigned yet (truly queued). Split into
+// roomIds (used to detect rooms no longer queued, for removal) and addable
+// (roomId -> visitor token + real creation time, for self-healing entries we
+// don't know about locally) because `room.v.token` isn't guaranteed to be
+// present on every room returned by this listing endpoint — treating its
+// absence as "not queued" would incorrectly evict a still-active room.
+export async function fetchQueuedRooms(): Promise<QueuedRoomsResult> {
   const base = process.env.ROCKETCHAT_URL;
   const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
   const userId = process.env.ROCKETCHAT_ADMIN_USER_ID;
 
-  const rooms = new Map<string, QueuedRoom>();
+  const roomIds = new Set<string>();
+  const addable = new Map<string, QueuedRoom>();
   if (!base || !token || !userId) {
     console.warn('[rcapi] Missing credentials — skipping reconcile');
-    return rooms;
+    return { roomIds, addable };
   }
 
   let offset = 0;
@@ -57,11 +70,14 @@ export async function fetchQueuedRooms(): Promise<Map<string, QueuedRoom>> {
 
     for (const room of body.rooms) {
       // A room is "queued" (waiting for human agent) when open and not yet served
-      if (room.open && !room.servedBy && room.v?.token) {
-        rooms.set(room._id, {
-          visitorToken: room.v.token,
-          createdAt: room.ts ? new Date(room.ts).getTime() : Date.now(),
-        });
+      if (room.open && !room.servedBy) {
+        roomIds.add(room._id);
+        if (room.v?.token) {
+          addable.set(room._id, {
+            visitorToken: room.v.token,
+            createdAt: room.ts ? new Date(room.ts).getTime() : Date.now(),
+          });
+        }
       }
     }
 
@@ -69,7 +85,7 @@ export async function fetchQueuedRooms(): Promise<Map<string, QueuedRoom>> {
     offset += PAGE_SIZE;
   }
 
-  return rooms;
+  return { roomIds, addable };
 }
 
 export interface RoomInfo {
@@ -187,9 +203,9 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
 export async function runReconciliation(): Promise<void> {
   console.log('[rcapi] starting reconciliation...');
   try {
-    const queuedRooms = await fetchQueuedRooms();
-    queueState.reconcile(queuedRooms);
-    console.log(`[rcapi] reconciliation done — ${queuedRooms.size} queued rooms in RC`);
+    const { roomIds, addable } = await fetchQueuedRooms();
+    queueState.reconcile(roomIds, addable);
+    console.log(`[rcapi] reconciliation done — ${roomIds.size} queued rooms in RC (${addable.size} with resolvable token)`);
   } catch (err) {
     console.error('[rcapi] reconciliation error:', err);
   }
