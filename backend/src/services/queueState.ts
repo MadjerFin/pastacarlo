@@ -138,6 +138,17 @@ class QueueState {
     return token ? this.entries.get(token) : undefined;
   }
 
+  // Room ids currently tracked locally as "queued" — used by reconciliation
+  // to know which rooms need a targeted re-check before evicting one that's
+  // merely absent from the bulk listing (which can have blind spots).
+  getQueuedRoomIds(): string[] {
+    const ids: string[] = [];
+    for (const [roomId, token] of this.roomIndex.entries()) {
+      if (this.entries.get(token)?.status === 'queued') ids.push(roomId);
+    }
+    return ids;
+  }
+
   getQueuedCount(departmentId: string): number {
     let n = 0;
     for (const e of this.entries.values()) {

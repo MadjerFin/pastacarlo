@@ -197,11 +197,14 @@ export interface VisitorInfo {
   id?: string;
   name?: string;
   phone?: string;
+  lastChatRoomId?: string;
 }
 
-// Fetch a visitor's RC id/name/phone by their token — used both to prefill
-// the "abrir nova sala" link (nome+tel são obrigatórios em /entrar) and to
-// resolve the visitorId needed by fetchOpenRoomForVisitorId below.
+// Fetch a visitor's RC id/name/phone/lastChat by their token — used to
+// prefill the "abrir nova sala" link (nome+tel são obrigatórios em /entrar)
+// and, via lastChatRoomId, as a fallback room lookup (see checkRcRoomStatus
+// in queue.ts) when the bulk rooms listing misses a room that's genuinely
+// still open.
 export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInfo | null> {
   const base = process.env.ROCKETCHAT_URL;
   const token = process.env.ROCKETCHAT_ADMIN_TOKEN;
@@ -220,7 +223,12 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
     if (!res.ok) return null;
 
     const body = await res.json() as {
-      visitor?: { _id?: string; name?: string; phone?: string | Array<{ phoneNumber?: string }> };
+      visitor?: {
+        _id?: string;
+        name?: string;
+        phone?: string | Array<{ phoneNumber?: string }>;
+        lastChat?: { _id?: string };
+      };
       success?: boolean;
     };
     if (!body.success || !body.visitor) return null;
@@ -228,7 +236,12 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
     const rawPhone = body.visitor.phone;
     const phone = typeof rawPhone === 'string' ? rawPhone : rawPhone?.[0]?.phoneNumber;
 
-    return { id: body.visitor._id, name: body.visitor.name, phone };
+    return {
+      id: body.visitor._id,
+      name: body.visitor.name,
+      phone,
+      lastChatRoomId: body.visitor.lastChat?._id,
+    };
   } catch (err) {
     console.error('[rcapi] fetchVisitorInfo error:', err);
     return null;
@@ -371,6 +384,22 @@ export async function runReconciliation(): Promise<void> {
   console.log('[rcapi] starting reconciliation...');
   try {
     const { roomIds, addable } = await fetchQueuedRooms();
+
+    // The bulk listing can have blind spots — confirmed live: a room shown
+    // as queued in RC's own dashboard was missing from this listing. Before
+    // evicting a room we're tracking locally as queued but that's absent
+    // here, double-check it directly via rooms.info (a targeted, single-room
+    // lookup that doesn't share whatever scoping issue the listing has)
+    // rather than trusting the listing's silence alone.
+    for (const roomId of queueState.getQueuedRoomIds()) {
+      if (roomIds.has(roomId)) continue;
+      const info = await fetchRoomInfo(roomId);
+      if (info?.open) {
+        console.warn(`[rcapi] room ${roomId} missing from bulk listing but rooms.info confirms it's still open — not evicting`);
+        roomIds.add(roomId);
+      }
+    }
+
     queueState.reconcile(roomIds, addable);
     console.log(`[rcapi] reconciliation done — ${roomIds.size} queued rooms in RC (${addable.size} with resolvable token)`);
   } catch (err) {

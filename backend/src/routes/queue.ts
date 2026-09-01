@@ -158,14 +158,34 @@ router.get('/:visitorToken', (req: Request, res: Response) => {
 // open a room the visitor never asked for.
 async function checkRcRoomStatus(visitorToken: string): Promise<{ status: 'queued' | 'connected' | 'none'; roomId?: string; departmentId?: string; createdAt?: number }> {
   const room = await fetchOpenRoomForVisitorToken(visitorToken);
-  if (!room?.open) return { status: 'none' };
+  if (room?.open) {
+    return {
+      status: room.servedBy ? 'connected' : 'queued',
+      roomId: room.roomId,
+      departmentId: room.departmentId,
+      createdAt: room.createdAt,
+    };
+  }
 
-  return {
-    status: room.servedBy ? 'connected' : 'queued',
-    roomId: room.roomId,
-    departmentId: room.departmentId,
-    createdAt: room.createdAt,
-  };
+  // The bulk listing above can miss a room that's genuinely still open in RC
+  // (confirmed live: RC's own dashboard showed it queued while this listing
+  // didn't). Fall back to the visitor's last-known room and confirm it
+  // directly — a targeted, single-room lookup that doesn't share whatever
+  // blind spot the bulk listing has.
+  const info = await fetchVisitorInfo(visitorToken);
+  if (info?.lastChatRoomId) {
+    const fallback = await fetchRoomInfo(info.lastChatRoomId);
+    if (fallback?.open) {
+      return {
+        status: fallback.servedBy ? 'connected' : 'queued',
+        roomId: info.lastChatRoomId,
+        departmentId: fallback.departmentId,
+        createdAt: fallback.createdAt,
+      };
+    }
+  }
+
+  return { status: 'none' };
 }
 
 // GET /queue/stream/:visitorToken — SSE stream
