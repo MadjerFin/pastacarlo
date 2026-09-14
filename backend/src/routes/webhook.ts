@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { validateWebhookSecret } from '../middleware/validateWebhook';
 import { queueState } from '../services/queueState';
-import { parseRcDate } from '../services/rocketchatApi';
+import { parseRcDate, fetchVisitorInfo } from '../services/rocketchatApi';
 
 const router = Router();
 
 // Rocket.Chat sends these event types (field may be `type` or `trigger`)
-type RCEventType = 'LivechatSessionQueued' | 'LivechatSessionTaken' | 'LivechatSessionClosed' | string;
+type RCEventType = 'LivechatSessionStart' | 'LivechatSessionQueued' | 'LivechatSessionTaken' | 'LivechatSessionClosed' | string;
 
 interface RCWebhookPayload {
   _id?: string;
@@ -23,6 +23,7 @@ interface RCWebhookPayload {
   visitor?: {
     token: string;
     _id?: string;
+    name?: string;
     [key: string]: unknown;
   };
   agent?: {
@@ -55,6 +56,50 @@ async function sendGreeting(roomId: string): Promise<void> {
     if (!body.success) console.warn(`[webhook] greeting rejected for roomId=${roomId}:`, body.error);
   } catch (err) {
     console.error('[webhook] greeting error:', err);
+  }
+}
+
+const DEFAULT_WELCOME_MESSAGE = 'Olá {name}! Em que posso ajudar?';
+
+// Rooms a welcome message was already sent to — kept until the room closes,
+// separate from the generic 5-min event dedup below (RC's own retry window
+// is short, but we never want two welcomes in the same still-open session).
+const welcomedRooms = new Set<string>();
+
+// Sends a one-time welcome message as the agent when a livechat session
+// starts. Mirrors sendGreeting's auth/fetch pattern; unlike it, interpolates
+// the visitor's name into a configurable template.
+async function sendWelcomeMessage(roomId: string, visitorToken: string, visitorName: string | undefined): Promise<void> {
+  if (welcomedRooms.has(roomId)) return;
+
+  const template = process.env.LIVECHAT_WELCOME_MESSAGE ?? DEFAULT_WELCOME_MESSAGE;
+  if (!template) return; // set LIVECHAT_WELCOME_MESSAGE="" to disable
+
+  const name = visitorName ?? (await fetchVisitorInfo(visitorToken))?.name ?? '';
+  // Collapse the leftover space before punctuation when there's no name
+  // (e.g. "Olá {name}! ..." -> "Olá! ...") instead of leaving "Olá !".
+  const msg = template.replace('{name}', name).replace(/ +([!,.?])/, '$1').trim();
+
+  const base = process.env.ROCKETCHAT_URL;
+  try {
+    const res = await fetch(`${base}/api/v1/chat.sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Auth-Token': process.env.ROCKETCHAT_ADMIN_TOKEN ?? '',
+        'X-User-Id': process.env.ROCKETCHAT_ADMIN_USER_ID ?? '',
+      },
+      body: JSON.stringify({ message: { rid: roomId, msg } }),
+    });
+    const body = await res.json() as { success?: boolean; error?: string };
+    if (!body.success) {
+      console.warn(`[webhook] welcome message rejected for roomId=${roomId}:`, body.error);
+      return;
+    }
+    welcomedRooms.add(roomId);
+    console.log(`[webhook] welcome message sent roomId=${roomId}`);
+  } catch (err) {
+    console.error('[webhook] welcome message error:', err);
   }
 }
 
@@ -95,6 +140,10 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
   const livechatBaseUrl = process.env.ROCKETCHAT_LIVECHAT_URL ?? `${process.env.ROCKETCHAT_URL ?? ''}/livechat`;
 
   switch (eventType) {
+    case 'LivechatSessionStart':
+      sendWelcomeMessage(roomId, visitorToken, payload.visitor?.name).catch(() => {});
+      break;
+
     case 'LivechatSessionQueued':
     case 'Chat Queued': {
       const createdAt = parseRcDate(payload.room?.ts);
@@ -118,6 +167,7 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
     case 'LivechatSessionClosed':
     case 'Chat Closed':
       queueState.remove(roomId);
+      welcomedRooms.delete(roomId);
       break;
 
     default:
