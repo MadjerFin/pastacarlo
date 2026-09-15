@@ -47,10 +47,6 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
   // instead of just derived from RC on every call.
   if (!entry && rc?.open && rc.visitorToken) {
     if (rc.servedBy) {
-      // NOTE: same caveat as elsewhere — `servedBy` alone doesn't prove a
-      // human actually engaged (see webhook.ts). Kept as-is here because
-      // self-heal only runs when local state was lost (e.g. backend
-      // restart) and there's no cheaper live signal to fall back on.
       queueState.confirmHumanAgent(roomId, rc.visitorToken, buildAgentUrl(rc.visitorToken));
     } else {
       // Uses RC's real creation time so the position doesn't jump to the back.
@@ -108,7 +104,6 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
   // (reinício do backend, webhook perdido).
   if (!entry && rc.roomId) {
     if (rc.status === 'connected') {
-      // Same caveat as the /room/:roomId self-heal above.
       queueState.confirmHumanAgent(rc.roomId, token, buildAgentUrl(token));
     } else if (rc.status === 'queued') {
       // Usa a hora real de criação da RC pra posição não pular pro fim da fila.
@@ -231,8 +226,7 @@ router.get('/stream/:visitorToken', (req: Request, res: Response) => {
     // No local state — check RC directly to recover from backend restarts
     checkRcRoomStatus(visitorToken).then(({ status, roomId, departmentId, createdAt }) => {
       if (status === 'connected' && roomId) {
-        // Agent already took the chat — immediately open it. Same caveat as
-        // the /room/:roomId self-heal above.
+        // Agent already took the chat — immediately open it
         queueState.confirmHumanAgent(roomId, visitorToken, buildAgentUrl(visitorToken));
       } else if (status === 'queued' && roomId) {
         // Still in queue — re-add to local state so position tracking works,

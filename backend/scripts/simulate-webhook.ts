@@ -1,7 +1,13 @@
-// Simula o cenário do bug original contra um backend rodando localmente:
-// Rocket.Chat atribui a sala (LivechatSessionTaken) sem nenhum humano
-// realmente presente, e confirma que a fila NÃO reporta "connected" até
-// chegar uma mensagem real de agente.
+// Simula o cenário do bug original contra um backend rodando localmente (ou
+// no Render): o problema real não era o Rocket.Chat disparar
+// LivechatSessionTaken sem humano (o roteamento deles só atribui agentes
+// online/disponíveis) — era o endpoint aceitar QUALQUER payload, inclusive
+// forjado por quem soubesse a URL, porque a validação de assinatura era
+// pulada quando LIVECHAT_WEBHOOK_SECRET não estava setado.
+//
+// Este script confirma: (1) um evento sem o secret correto é rejeitado (401)
+// e não altera o estado da fila; (2) um LivechatSessionTaken autenticado
+// continua conectando o visitante imediatamente, como antes.
 //
 // Uso:
 //   BASE_URL=http://localhost:3000 LIVECHAT_WEBHOOK_SECRET=xxx tsx scripts/simulate-webhook.ts
@@ -20,16 +26,17 @@ const roomId = `sim-room-${Date.now()}`;
 const visitorToken = `sim-token-${Date.now()}`;
 const fakeAgentId = 'sim-agent-id';
 
-async function postWebhook(payload: unknown): Promise<void> {
+async function postWebhook(payload: unknown, secret: string): Promise<number> {
   const res = await fetch(`${BASE_URL}/webhooks/rocketchat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Rocketchat-Livechat-Token': SECRET as string,
+      'X-Rocketchat-Livechat-Token': secret,
     },
     body: JSON.stringify(payload),
   });
   console.log(`  -> POST /webhooks/rocketchat: ${res.status}`);
+  return res.status;
 }
 
 async function getQueueStatus(): Promise<string> {
@@ -40,49 +47,62 @@ async function getQueueStatus(): Promise<string> {
 }
 
 async function main() {
-  console.log(`\n[1] Enfileirando visitante (roomId=${roomId})`);
-  await postWebhook({
-    type: 'LivechatSessionQueued',
-    room: { _id: roomId, departmentId: 'sim-dept', ts: new Date().toISOString() },
-    visitor: { token: visitorToken },
-  });
-  console.log(`    status atual: ${await getQueueStatus()} (esperado: queued)`);
-
-  console.log(`\n[2] Disparando LivechatSessionTaken SEM humano real (roteamento automático)`);
-  await postWebhook({
-    type: 'LivechatSessionTaken',
-    room: { _id: roomId },
-    visitor: { token: visitorToken },
-    agent: { _id: fakeAgentId, username: 'auto-routing-agent' },
-  });
-  const statusAfterTaken = await getQueueStatus();
-  console.log(`    status atual: ${statusAfterTaken} (esperado: queued — NÃO deve virar 'connected' só com o Taken)`);
-  if (statusAfterTaken === 'connected') {
-    console.error('    FALHA: fila marcou "connected" sem confirmação de agente humano.');
+  console.log(`\n[1] Tentando forjar um LivechatSessionTaken com secret ERRADO (roomId=${roomId})`);
+  const forgedStatus = await postWebhook(
+    {
+      type: 'LivechatSessionTaken',
+      room: { _id: roomId },
+      visitor: { token: visitorToken },
+      agent: { _id: fakeAgentId, username: 'forjado' },
+    },
+    'secret-errado-de-proposito',
+  );
+  if (forgedStatus === 200) {
+    console.error('    FALHA: requisição forjada foi aceita (esperado 401).');
     process.exitCode = 1;
   } else {
-    console.log('    OK: frontend continuaria mostrando "aguardando", não "conectado".');
+    console.log(`    OK: requisição forjada rejeitada (status ${forgedStatus}).`);
+  }
+  const statusAfterForged = await getQueueStatus();
+  if (statusAfterForged !== 'not_found') {
+    console.error(`    FALHA: estado da fila mudou mesmo com requisição forjada (status=${statusAfterForged}).`);
+    process.exitCode = 1;
+  } else {
+    console.log('    OK: nenhum estado de fila foi criado a partir do evento forjado.');
   }
 
-  console.log(`\n[3] Disparando mensagem real do agente humano (evento 'Message')`);
-  await postWebhook({
-    type: 'Message',
-    room: { _id: roomId },
-    visitor: { token: visitorToken },
-    agent: { _id: fakeAgentId, username: 'agente-real' },
-    messages: [{ _id: 'msg1', msg: 'Oi, tudo bem?', agentId: fakeAgentId, u: { _id: fakeAgentId, username: 'agente-real' } }],
-  });
-  const statusAfterMessage = await getQueueStatus();
-  console.log(`    status atual: ${statusAfterMessage} (esperado: connected)`);
-  if (statusAfterMessage !== 'connected') {
-    console.error('    FALHA: mensagem real do agente não confirmou o status "connected".');
+  console.log(`\n[2] Enfileirando visitante com secret correto`);
+  await postWebhook(
+    {
+      type: 'LivechatSessionQueued',
+      room: { _id: roomId, departmentId: 'sim-dept', ts: new Date().toISOString() },
+      visitor: { token: visitorToken },
+    },
+    SECRET as string,
+  );
+  console.log(`    status atual: ${await getQueueStatus()} (esperado: queued)`);
+
+  console.log(`\n[3] Disparando LivechatSessionTaken autenticado`);
+  await postWebhook(
+    {
+      type: 'LivechatSessionTaken',
+      room: { _id: roomId },
+      visitor: { token: visitorToken },
+      agent: { _id: fakeAgentId, username: 'agente-real' },
+    },
+    SECRET as string,
+  );
+  const statusAfterTaken = await getQueueStatus();
+  console.log(`    status atual: ${statusAfterTaken} (esperado: connected)`);
+  if (statusAfterTaken !== 'connected') {
+    console.error('    FALHA: Taken autenticado não conectou o visitante.');
     process.exitCode = 1;
   } else {
-    console.log('    OK: só agora o frontend mostraria "conectado".');
+    console.log('    OK: frontend mostraria "conectado" imediatamente, como esperado.');
   }
 
   console.log(`\n[4] Encerrando sala simulada`);
-  await postWebhook({ type: 'LivechatSessionClosed', room: { _id: roomId }, visitor: { token: visitorToken } });
+  await postWebhook({ type: 'LivechatSessionClosed', room: { _id: roomId }, visitor: { token: visitorToken } }, SECRET as string);
 
   console.log(process.exitCode ? '\nResultado: FALHOU\n' : '\nResultado: OK\n');
 }

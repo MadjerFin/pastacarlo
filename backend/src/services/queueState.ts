@@ -58,19 +58,6 @@ class QueueState {
     console.log(`[queue] enqueue  roomId=${roomId} token=${visitorToken} dept=${departmentId} pos=${this.entries.get(visitorToken)?.position}`);
   }
 
-  // Rocket.Chat's routing algorithm can populate `servedBy` (and fire
-  // LivechatSessionTaken) the instant a room is auto-assigned, before any
-  // human has actually engaged. This records the assignment for debugging
-  // but deliberately does NOT flip `status` or notify SSE clients — the
-  // visitor keeps seeing "queued" until confirmHumanAgent() fires for real.
-  markAssigned(roomId: string, visitorToken: string): void {
-    const token = this.roomIndex.get(roomId) ?? visitorToken;
-    console.log(`[queue] sala atribuída automaticamente (aguardando agente humano) roomId=${roomId} token=${token}`);
-  }
-
-  // The only path that should ever surface "connected" to a visitor — call
-  // this once a real human agent is confirmed (e.g. they sent an actual
-  // message), not merely when Rocket.Chat assigned the room to someone.
   confirmHumanAgent(roomId: string, visitorToken: string, agentUrl: string): void {
     const token = this.roomIndex.get(roomId) ?? visitorToken;
 
