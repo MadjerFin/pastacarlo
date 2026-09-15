@@ -59,7 +59,7 @@ if (process.env.ENABLE_DEBUG_ROUTES === 'true') {
     const { roomId } = req.body as { roomId?: string };
     if (!roomId) { res.status(400).json({ ok: false, error: 'roomId required' }); return; }
     const agentUrl = '';
-    queueState.markConnected(roomId, token, agentUrl);
+    queueState.confirmHumanAgent(roomId, token, agentUrl);
     console.log(`[debug] manually triggered connected for token=${token} roomId=${roomId}`);
     res.json({ ok: true });
   });

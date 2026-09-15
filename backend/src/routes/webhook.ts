@@ -5,8 +5,30 @@ import { parseRcDate, fetchVisitorInfo } from '../services/rocketchatApi';
 
 const router = Router();
 
-// Rocket.Chat sends these event types (field may be `type` or `trigger`)
-type RCEventType = 'LivechatSessionStart' | 'LivechatSessionQueued' | 'LivechatSessionTaken' | 'LivechatSessionClosed' | string;
+// Rocket.Chat sends these event types (field may be `type` or `trigger`).
+// 'Message' fires for both "Send Request on Agent Message" and "Send Request
+// on Visitor Message" (if enabled in Admin > Omnichannel > Webhooks) — the
+// two are told apart by isConfirmedAgentMessage() below, not by eventType.
+type RCEventType =
+  | 'LivechatSessionStart'
+  | 'LivechatSessionQueued'
+  | 'LivechatSessionTaken'
+  | 'LivechatSessionClosed'
+  | 'Message'
+  | string;
+
+interface RCMessage {
+  _id?: string;
+  msg?: string;
+  // Set by RC on messages actually sent by the room's serving agent.
+  agentId?: string;
+  // Set (to the visitor's token) on messages sent by the visitor instead —
+  // absence of this isn't itself proof of an agent message, hence checking
+  // agentId/u._id rather than just "no token".
+  token?: string;
+  u?: { _id?: string; username?: string; [key: string]: unknown };
+  [key: string]: unknown;
+}
 
 interface RCWebhookPayload {
   _id?: string;
@@ -31,6 +53,22 @@ interface RCWebhookPayload {
     username?: string;
     [key: string]: unknown;
   };
+  messages?: RCMessage[];
+}
+
+// Is the most recent message in this payload one actually sent by the
+// room's assigned human agent — not the visitor, and not our own automated
+// greeting (sendGreeting() below posts using the admin/bot credentials, and
+// must never be mistaken for a human confirming they're present)?
+function isConfirmedAgentMessage(payload: RCWebhookPayload): boolean {
+  const agentId = payload.agent?._id;
+  if (!agentId) return false;
+  if (agentId === process.env.ROCKETCHAT_ADMIN_USER_ID) return false;
+
+  const lastMessage = payload.messages?.[payload.messages.length - 1];
+  if (!lastMessage) return false;
+
+  return lastMessage.agentId === agentId || lastMessage.u?._id === agentId;
 }
 
 const DEFAULT_GREETING = 'Oi, sou da Sapios, como posso te ajudar?';
@@ -156,11 +194,25 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
 
     case 'LivechatSessionTaken':
     case 'Chat Taken': {
-      // Pass only the visitor token — RC finds the open room by token automatically.
-      // Adding &room= was causing "Invalid token" on the livechat page.
-      const agentUrl = `${livechatBaseUrl}?token=${encodeURIComponent(visitorToken)}`;
-      queueState.markConnected(roomId, visitorToken, agentUrl);
+      // RC can assign `servedBy` (and fire this event) the moment its
+      // routing algorithm picks someone — including auto-routing, before any
+      // human has actually engaged. Don't tell the visitor they're connected
+      // yet; only record the assignment and wait for a real confirmation
+      // (see the 'Message' case below).
+      queueState.markAssigned(roomId, visitorToken);
       sendGreeting(roomId).catch(() => {});
+      break;
+    }
+
+    // Requires "Send Request on Agent Message" enabled in Admin >
+    // Omnichannel > Webhooks. This is the actual "connected" signal — a
+    // human agent sending a real message, as opposed to being merely
+    // assigned to the room (see 'LivechatSessionTaken' above).
+    case 'Message': {
+      if (isConfirmedAgentMessage(payload)) {
+        const agentUrl = `${livechatBaseUrl}?token=${encodeURIComponent(visitorToken)}`;
+        queueState.confirmHumanAgent(roomId, visitorToken, agentUrl);
+      }
       break;
     }
 
