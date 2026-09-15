@@ -172,6 +172,15 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
       break;
     }
 
+    // Confirmed from live traffic: RC's "Send Request on Chat Closed" trigger
+    // actually sends `type: "LivechatSession"` (the full transcript, per RC's
+    // docs) — not "LivechatSessionClosed"/"Chat Closed" as previously assumed.
+    // Without this case, closed rooms stayed "connected" locally until the
+    // next periodic reconciliation (up to RECONCILE_INTERVAL_SECONDS later)
+    // caught the mismatch, so an immediate status check right after closing
+    // still reported "connected". Keeping the old names too in case a
+    // different RC version/config sends them.
+    case 'LivechatSession':
     case 'LivechatSessionClosed':
     case 'Chat Closed':
       queueState.remove(roomId);
