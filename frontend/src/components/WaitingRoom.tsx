@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ChatRoom from './ChatRoom';
 
-type AppState = 'loading' | 'queued' | 'connecting' | 'chat' | 'error' | 'no_token';
+type AppState = 'loading' | 'queued' | 'connecting' | 'chat' | 'error' | 'no_token' | 'expired';
 
 interface QueueData {
   position: number;
@@ -34,6 +34,7 @@ export default function WaitingRoom() {
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryCountRef = useRef(0);
   const connectedRef = useRef(false);
+  const [reopening, setReopening] = useState(false);
 
   const params = new URLSearchParams(window.location.search);
   const visitorToken = params.get('token');
@@ -83,6 +84,14 @@ export default function WaitingRoom() {
       setAppState('loading');
     });
 
+    // No active room for this token at all (e.g. it already closed since
+    // this link was last opened) — distinct from a transient reconnect, so
+    // offer to reopen instead of spinning on "checking your position" forever.
+    es.addEventListener('no_room', () => {
+      es.close();
+      setAppState('expired');
+    });
+
     es.onerror = () => {
       setConnectionError(true);
       es.close();
@@ -95,6 +104,27 @@ export default function WaitingRoom() {
   function cleanup() {
     eventSourceRef.current?.close();
     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+  }
+
+  async function reopenConversation() {
+    if (!visitorToken) return;
+    setReopening(true);
+    try {
+      const res = await fetch('/visitors/reopen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: visitorToken }),
+      });
+      const data = await res.json() as { ok: boolean; link?: string };
+      if (data.ok && data.link) {
+        window.location.href = data.link;
+        return;
+      }
+    } catch {
+      // fall through to error state below
+    }
+    setReopening(false);
+    setAppState('error');
   }
 
   if (appState === 'chat' && visitorToken && chatRoomId) {
@@ -129,6 +159,7 @@ export default function WaitingRoom() {
       {appState === 'loading' && <LoadingState connectionError={connectionError} />}
       {appState === 'queued' && queueData && <QueuedState data={queueData} />}
       {appState === 'connecting' && <ConnectingState />}
+      {appState === 'expired' && <ExpiredState reopening={reopening} onReopen={reopenConversation} />}
       {appState === 'error' && <ErrorCard message="Erro inesperado. Por favor, recarregue a página." />}
     </div>
   );
@@ -175,6 +206,27 @@ function QueuedState({ data }: { data: QueueData }) {
       {wait && <p style={styles.mutedText}>Tempo estimado de espera: {wait}</p>}
       <QueueBar position={data.position} total={data.queueSize} />
       <p style={styles.hint}>Esta página atualiza automaticamente. Não feche a aba.</p>
+    </div>
+  );
+}
+
+function ExpiredState({ reopening, onReopen }: { reopening: boolean; onReopen: () => void }) {
+  return (
+    <div style={styles.stateArea}>
+      <div style={{ fontSize: '2rem' }}>⏱️</div>
+      <p style={styles.primaryText}>Este atendimento não está mais ativo.</p>
+      <button
+        type="button"
+        onClick={onReopen}
+        disabled={reopening}
+        style={{
+          background: 'var(--color-primary)', color: '#fff', border: 'none',
+          padding: '0.6rem 1.25rem', borderRadius: 999, fontSize: '0.9rem',
+          fontWeight: 600, cursor: reopening ? 'default' : 'pointer', opacity: reopening ? 0.6 : 1,
+        }}
+      >
+        {reopening ? 'Abrindo...' : 'Iniciar novo atendimento'}
+      </button>
     </div>
   );
 }

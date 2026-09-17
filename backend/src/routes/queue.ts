@@ -233,10 +233,17 @@ router.get('/stream/:visitorToken', (req: Request, res: Response) => {
         // using RC's real creation time so the position doesn't jump to the back
         queueState.enqueue(roomId, visitorToken, departmentId ?? '', createdAt);
       } else {
-        send('waiting', { message: 'Aguardando registro na fila...' });
+        // Genuinely no open room for this visitor (e.g. it closed since the
+        // link was last used) — distinct from a transient "waiting", so the
+        // frontend can offer to reopen instead of spinning forever on a link
+        // that will never receive another update. Close the stream too: this
+        // token isn't in `entries`, so nothing will ever push it another event.
+        send('no_room', { message: 'Nenhum atendimento ativo encontrado.' });
+        res.end();
       }
     }).catch(() => {
-      send('waiting', { message: 'Aguardando registro na fila...' });
+      send('no_room', { message: 'Nenhum atendimento ativo encontrado.' });
+      res.end();
     });
   }
 
