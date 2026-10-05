@@ -35,16 +35,59 @@ async function registerVisitor(name: string | undefined, phone: string, token: s
   return returned;
 }
 
-async function openRoom(visitorToken: string): Promise<string> {
+async function openRoom(visitorToken: string): Promise<{ roomId: string; newRoom: boolean }> {
   const base = process.env.ROCKETCHAT_URL;
   const url = `${base}/api/v1/livechat/room?token=${encodeURIComponent(visitorToken)}`;
   const res = await fetch(url);
-  const body = await res.json() as { room?: { _id?: string }; success?: boolean; error?: string };
+  const body = await res.json() as { room?: { _id?: string }; newRoom?: boolean; success?: boolean; error?: string };
   console.log(`[visitors] openRoom raw:`, JSON.stringify(body).slice(0, 200));
-  return body.room?._id ?? '';
+  // RC sends `newRoom: false` when it resumed an already-open room. Treat a
+  // missing flag as new, so older RC versions still get the infoagent message.
+  return { roomId: body.room?._id ?? '', newRoom: body.newRoom !== false };
 }
 
-// POST /visitors/register  body: { name, phone, fila? }
+const INFOAGENT_MAX_LENGTH = 4000;
+
+// The bot can send `infoagent` as plain text or as an object of fields
+// (e.g. { cpf: "...", plano: "..." }) — objects become one "chave: valor"
+// line each, so the agent reads it as a tidy summary instead of raw JSON.
+function formatInfoAgent(info: unknown): string {
+  if (info == null) return '';
+  if (typeof info === 'string') return info.trim().slice(0, INFOAGENT_MAX_LENGTH);
+  if (typeof info === 'object' && !Array.isArray(info)) {
+    return Object.entries(info as Record<string, unknown>)
+      .filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join('\n')
+      .slice(0, INFOAGENT_MAX_LENGTH);
+  }
+  return String(info).slice(0, INFOAGENT_MAX_LENGTH);
+}
+
+// Posts the bot's collected data as the visitor's first message in the room,
+// so whoever takes the chat already knows who they're talking to. Sent as the
+// visitor (livechat/message, same as /chat/message) rather than as an agent,
+// so it doesn't count as an agent reply. Never fails the registration.
+async function sendInfoAgent(visitorToken: string, roomId: string, msg: string): Promise<void> {
+  const base = process.env.ROCKETCHAT_URL;
+  try {
+    const res = await fetch(`${base}/api/v1/livechat/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: visitorToken, rid: roomId, msg }),
+    });
+    const body = await res.json() as { success?: boolean; error?: string };
+    if (!body.success) console.warn(`[visitors] infoagent rejected for roomId=${roomId}:`, body.error);
+    else console.log(`[visitors] infoagent sent roomId=${roomId}`);
+  } catch (err) {
+    console.error('[visitors] infoagent error:', err);
+  }
+}
+
+// POST /visitors/register  body: { name, phone, fila?, infoagent? }
+// `infoagent` (texto ou objeto { campo: valor }) é postado como a primeira
+// mensagem do visitante na sala — só quando a sala é nova, pra não repetir
+// os dados se o bot chamar de novo com a sala ainda aberta.
 // `fila` é o nome do departamento como cadastrado na RC (ex: "Suporte") —
 // resolvido dinamicamente pra um ID via findDepartmentIdByName, então não
 // precisa hardcodear/expor o ID interno da RC. Omitido, cai no departamento
@@ -53,7 +96,7 @@ async function openRoom(visitorToken: string): Promise<string> {
 // isso, qualquer um que soubesse um telefone alheio reabriria a conversa
 // daquela pessoa (histórico + capacidade de mandar mensagem em nome dela).
 router.post('/register', requireBotSecret, async (req: Request, res: Response) => {
-  const { name, phone, fila } = req.body as { name?: string; phone?: string; fila?: string };
+  const { name, phone, fila, infoagent } = req.body as { name?: string; phone?: string; fila?: string; infoagent?: unknown };
 
   if (!name || !phone) {
     res.status(400).json({ ok: false, error: 'name e phone são obrigatórios' });
@@ -87,8 +130,14 @@ router.post('/register', requireBotSecret, async (req: Request, res: Response) =
     const confirmedToken = await registerVisitor(name, cleanPhone, tokenToUse, departmentId);
 
     // 4. Open (or reopen) the livechat room in the resolved department
-    const roomId = await openRoom(confirmedToken);
-    console.log(`[visitors] room opened roomId=${roomId} token=${confirmedToken.slice(0, 12)}...`);
+    const { roomId, newRoom } = await openRoom(confirmedToken);
+    console.log(`[visitors] room opened roomId=${roomId} new=${newRoom} token=${confirmedToken.slice(0, 12)}...`);
+
+    // 5. Post the bot's collected data as the visitor's first message
+    const infoMsg = formatInfoAgent(infoagent);
+    if (infoMsg && roomId && newRoom) {
+      await sendInfoAgent(confirmedToken, roomId, infoMsg);
+    }
 
     const link = buildAppLink(confirmedToken, roomId || undefined, name, cleanPhone);
     res.json({ ok: true, token: confirmedToken, roomId, link });
@@ -118,7 +167,7 @@ router.post('/reopen', async (req: Request, res: Response) => {
       return;
     }
 
-    const roomId = await openRoom(token);
+    const { roomId } = await openRoom(token);
     console.log(`[visitors] reopened roomId=${roomId} token=${token.slice(0, 12)}...`);
 
     const link = buildAppLink(token, roomId || undefined, info.name, info.phone);
