@@ -198,6 +198,7 @@ export interface VisitorInfo {
   name?: string;
   phone?: string;
   lastChatRoomId?: string;
+  departmentId?: string;
 }
 
 // Fetch a visitor's RC id/name/phone/lastChat by their token — used to
@@ -228,6 +229,7 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
         name?: string;
         phone?: string | Array<{ phoneNumber?: string }>;
         lastChat?: { _id?: string };
+        department?: string;
       };
       success?: boolean;
     };
@@ -241,6 +243,7 @@ export async function fetchVisitorInfo(visitorToken: string): Promise<VisitorInf
       name: body.visitor.name,
       phone,
       lastChatRoomId: body.visitor.lastChat?._id,
+      departmentId: body.visitor.department,
     };
   } catch (err) {
     console.error('[rcapi] fetchVisitorInfo error:', err);
@@ -257,8 +260,8 @@ export interface OpenRoomLookup {
 }
 
 // Read-only check: does this visitor currently have an open room? Deliberately
-// NOT using GET /livechat/room?token=... (the endpoint openRoom() in
-// visitors.ts uses to actually start/resume a chat) — that endpoint creates a
+// NOT using GET /livechat/room?token=... (the endpoint openRoom() below
+// uses to actually start/resume a chat) — that endpoint creates a
 // brand new room as a side effect when the visitor has none, which is exactly
 // wrong for a caller that's just polling status (self-heal, bot checks).
 //
@@ -410,6 +413,41 @@ export async function fetchAgentsOnline(departmentId?: string): Promise<boolean 
   } catch (err) {
     console.error('[rcapi] fetchAgentsOnline error:', err);
     return null;
+  }
+}
+
+// Opens (or resumes) the visitor's livechat room. Has a side effect —
+// creates a room when there's none — so only call it when the visitor
+// actually asked to talk (register/reopen, or the pending-queue job).
+// `errorType: 'no-agent-online'` comes back when RC refuses for lack of agents.
+export async function openRoom(visitorToken: string): Promise<{ roomId: string; newRoom: boolean; errorType?: string }> {
+  const base = process.env.ROCKETCHAT_URL;
+  const url = `${base}/api/v1/livechat/room?token=${encodeURIComponent(visitorToken)}`;
+  const res = await fetch(url);
+  const body = await res.json() as { room?: { _id?: string }; newRoom?: boolean; success?: boolean; error?: string; errorType?: string };
+  console.log(`[visitors] openRoom raw:`, JSON.stringify(body).slice(0, 200));
+  // RC sends `newRoom: false` when it resumed an already-open room. Treat a
+  // missing flag as new, so older RC versions still get the infoagent message.
+  return { roomId: body.room?._id ?? '', newRoom: body.newRoom !== false, errorType: body.errorType };
+}
+
+// Posts the bot's collected data as the visitor's first message in the room,
+// so whoever takes the chat already knows who they're talking to. Sent as the
+// visitor (livechat/message, same as /chat/message) rather than as an agent,
+// so it doesn't count as an agent reply. Never fails the registration.
+export async function sendInfoAgent(visitorToken: string, roomId: string, msg: string): Promise<void> {
+  const base = process.env.ROCKETCHAT_URL;
+  try {
+    const res = await fetch(`${base}/api/v1/livechat/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: visitorToken, rid: roomId, msg }),
+    });
+    const body = await res.json() as { success?: boolean; error?: string };
+    if (!body.success) console.warn(`[visitors] infoagent rejected for roomId=${roomId}:`, body.error);
+    else console.log(`[visitors] infoagent sent roomId=${roomId}`);
+  } catch (err) {
+    console.error('[visitors] infoagent error:', err);
   }
 }
 

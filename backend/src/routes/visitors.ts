@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
-import { findContactTokenByPhone, findDepartmentIdByName, fetchVisitorInfo, fetchAgentsOnline } from '../services/rocketchatApi';
+import { findContactTokenByPhone, findDepartmentIdByName, fetchVisitorInfo, fetchAgentsOnline, openRoom, sendInfoAgent } from '../services/rocketchatApi';
+import { queueState } from '../services/queueState';
+import { promotePending } from '../services/pendingQueue';
 import { buildAppLink } from '../services/links';
 import { requireBotSecret } from '../middleware/requireBotSecret';
 
@@ -35,17 +37,6 @@ async function registerVisitor(name: string | undefined, phone: string, token: s
   return returned;
 }
 
-async function openRoom(visitorToken: string): Promise<{ roomId: string; newRoom: boolean; errorType?: string }> {
-  const base = process.env.ROCKETCHAT_URL;
-  const url = `${base}/api/v1/livechat/room?token=${encodeURIComponent(visitorToken)}`;
-  const res = await fetch(url);
-  const body = await res.json() as { room?: { _id?: string }; newRoom?: boolean; success?: boolean; error?: string; errorType?: string };
-  console.log(`[visitors] openRoom raw:`, JSON.stringify(body).slice(0, 200));
-  // RC sends `newRoom: false` when it resumed an already-open room. Treat a
-  // missing flag as new, so older RC versions still get the infoagent message.
-  return { roomId: body.room?._id ?? '', newRoom: body.newRoom !== false, errorType: body.errorType };
-}
-
 const INFOAGENT_MAX_LENGTH = 4000;
 
 // The bot can send `infoagent` as plain text or as an object of fields
@@ -62,26 +53,6 @@ function formatInfoAgent(info: unknown): string {
       .slice(0, INFOAGENT_MAX_LENGTH);
   }
   return String(info).slice(0, INFOAGENT_MAX_LENGTH);
-}
-
-// Posts the bot's collected data as the visitor's first message in the room,
-// so whoever takes the chat already knows who they're talking to. Sent as the
-// visitor (livechat/message, same as /chat/message) rather than as an agent,
-// so it doesn't count as an agent reply. Never fails the registration.
-async function sendInfoAgent(visitorToken: string, roomId: string, msg: string): Promise<void> {
-  const base = process.env.ROCKETCHAT_URL;
-  try {
-    const res = await fetch(`${base}/api/v1/livechat/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: visitorToken, rid: roomId, msg }),
-    });
-    const body = await res.json() as { success?: boolean; error?: string };
-    if (!body.success) console.warn(`[visitors] infoagent rejected for roomId=${roomId}:`, body.error);
-    else console.log(`[visitors] infoagent sent roomId=${roomId}`);
-  } catch (err) {
-    console.error('[visitors] infoagent error:', err);
-  }
 }
 
 // POST /visitors/register  body: { name, phone, fila?, infoagent? }
@@ -132,20 +103,28 @@ router.post('/register', requireBotSecret, async (req: Request, res: Response) =
     // 4. Open (or reopen) the livechat room in the resolved department
     const { roomId, newRoom, errorType } = await openRoom(confirmedToken);
 
+    const infoMsg = formatInfoAgent(infoagent);
+
     // RC refuses to create a room when no agent is online (unless it's set to
-    // accept chats without agents). Answer that explicitly instead of a
-    // success without a room — that sent the visitor to a page with nothing
-    // to wait on, whose "Iniciar novo atendimento" just looped.
+    // accept chats without agents). Keep the visitor in line anyway: park them
+    // as pending (with the infoagent, posted once the room opens) and let the
+    // pending job open the room as soon as an agent comes online. The link
+    // works like any queue link — the page shows their position.
     if (!roomId && errorType === 'no-agent-online') {
-      console.log(`[visitors] no agent online — room not opened token=${confirmedToken.slice(0, 12)}...`);
-      res.status(503).json({ ok: false, error: 'no_agent_online', agentsOnline: false });
+      queueState.addPending(confirmedToken, departmentId, { infoagent: infoMsg || undefined });
+      console.log(`[visitors] no agent online — kept in line as pending token=${confirmedToken.slice(0, 12)}...`);
+      const link = buildAppLink(confirmedToken, undefined, name, cleanPhone);
+      res.json({ ok: true, token: confirmedToken, roomId: null, link, agentsOnline: false, pending: true });
       return;
     }
     console.log(`[visitors] room opened roomId=${roomId} new=${newRoom} token=${confirmedToken.slice(0, 12)}...`);
 
-    // 5. Post the bot's collected data as the visitor's first message
-    const infoMsg = formatInfoAgent(infoagent);
-    if (infoMsg && roomId && newRoom) {
+    if (roomId && queueState.getEntry(confirmedToken)?.status === 'pending') {
+      // Was waiting for an agent and RC accepted the room on this call —
+      // promotePending moves them into the queue and posts the stored infoagent.
+      await promotePending(confirmedToken, roomId, newRoom);
+    } else if (infoMsg && roomId && newRoom) {
+      // 5. Post the bot's collected data as the visitor's first message
       await sendInfoAgent(confirmedToken, roomId, infoMsg);
     }
 
@@ -181,13 +160,17 @@ router.post('/reopen', async (req: Request, res: Response) => {
       return;
     }
 
-    const { roomId, errorType } = await openRoom(token);
+    const { roomId, newRoom, errorType } = await openRoom(token);
     if (!roomId && errorType === 'no-agent-online') {
-      console.log(`[visitors] no agent online — room not reopened token=${token.slice(0, 12)}...`);
-      res.status(503).json({ ok: false, error: 'no_agent_online' });
+      // Same as register: keep them in line until an agent comes online.
+      queueState.addPending(token, info.departmentId ?? '', {});
+      console.log(`[visitors] no agent online — reopen kept in line as pending token=${token.slice(0, 12)}...`);
+      const link = buildAppLink(token, undefined, info.name, info.phone);
+      res.json({ ok: true, token, roomId: null, link, pending: true });
       return;
     }
     console.log(`[visitors] reopened roomId=${roomId} token=${token.slice(0, 12)}...`);
+    if (roomId) await promotePending(token, roomId, newRoom);
 
     const link = buildAppLink(token, roomId || undefined, info.name, info.phone);
     res.json({ ok: true, token, roomId, link });

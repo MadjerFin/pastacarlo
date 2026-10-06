@@ -64,6 +64,8 @@ npm install
 | `LIVECHAT_WEBHOOK_SECRET` | Secret token que você vai configurar no RC |
 | `PORT` | Porta do backend (padrão: 3000) |
 | `RECONCILE_INTERVAL_SECONDS` | Intervalo de reconciliação com a API do RC (padrão: 30) |
+| `PENDING_RETRY_SECONDS` | Intervalo para tentar abrir a sala de quem está na fila sem atendente online (padrão: 15) |
+| `PENDING_TTL_HOURS` | Tempo máximo na fila pendente antes de desistir (padrão: 12) |
 | `FRONTEND_URL` | URL do frontend para CORS (padrão: `http://localhost:5173`) |
 | `ROCKETCHAT_LIVECHAT_URL` | URL do widget de livechat onde o visitante será redirecionado |
 
@@ -125,8 +127,8 @@ Frontend recebe "connected"  ──►  redireciona para URL do livechat
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | POST | `/webhooks/rocketchat` | Recebe eventos do Omnichannel |
-| POST | `/visitors/register` `{ name, phone, fila?, infoagent? }` | Abre/reabre a sala do visitante por telefone — protegido por secret (`Authorization: Bearer <token>`), só o bot chama. `infoagent` (texto ou objeto `{ campo: valor }`) vira a primeira mensagem do visitante na sala, só quando a sala é nova. A resposta traz `agentsOnline` (`true`/`false`/`null`) pro bot poder avisar quando não há atendente online. Se a RC recusar abrir a sala por falta de atendente, responde `503 { ok: false, error: "no_agent_online" }` (sem `link`) |
-| POST | `/visitors/reopen` `{ token }` | Reabre uma sala nova pro visitante que já tem seu próprio token (ex: botão "Iniciar novo atendimento" no chat) — sem secret, pois o token já prova quem é. Sem atendente online, responde `503 { ok: false, error: "no_agent_online" }` e a página mostra o aviso em vez de recarregar |
+| POST | `/visitors/register` `{ name, phone, fila?, infoagent? }` | Abre/reabre a sala do visitante por telefone — protegido por secret (`Authorization: Bearer <token>`), só o bot chama. `infoagent` (texto ou objeto `{ campo: valor }`) vira a primeira mensagem do visitante na sala, só quando a sala é nova. A resposta traz `agentsOnline` (`true`/`false`/`null`) pro bot poder avisar quando não há atendente online. Se a RC recusar abrir a sala por falta de atendente, o visitante **continua na fila** como pendente: responde `200 { ok: true, roomId: null, link, agentsOnline: false, pending: true }` e o backend tenta abrir a sala a cada `PENDING_RETRY_SECONDS` (padrão 15s) até um atendente ficar online — aí o `infoagent` é postado normalmente. Desiste após `PENDING_TTL_HOURS` (padrão 12h) |
+| POST | `/visitors/reopen` `{ token }` | Reabre uma sala nova pro visitante que já tem seu próprio token (ex: botão "Iniciar novo atendimento" no chat) — sem secret, pois o token já prova quem é. Sem atendente online, mantém o visitante na fila como pendente (mesma resposta de sucesso, com `pending: true`) |
 | GET | `/queue/agents-online/:visitorToken` | `{ online }` — há atendente online no departamento da sala? (`null` se não der pra saber). A sala de espera consulta a cada 30s e mostra o aviso "No momento não há atendentes online" |
 | GET | `/queue/:visitorToken` | Snapshot do status atual |
 | GET | `/queue/room/:roomId` | Posição na fila, status (`queued`/`connected`/`closed`) e `link` correspondente, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |

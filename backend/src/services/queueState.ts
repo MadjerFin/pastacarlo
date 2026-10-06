@@ -1,15 +1,29 @@
 import { Response } from 'express';
 
-export type VisitorStatus = 'queued' | 'connected' | 'closed';
+// 'pending' = in line, but RC refused to open a room yet because no agent
+// was online (no-agent-online). Has no roomId until the pending job manages
+// to open one, at which point it becomes 'queued' like any other room.
+export type VisitorStatus = 'pending' | 'queued' | 'connected' | 'closed';
+
+export interface PendingInfo {
+  // Bot's infoagent, already formatted — posted once the room finally opens.
+  infoagent?: string;
+}
 
 export interface VisitorEntry {
-  roomId: string;
+  roomId: string; // '' while status = 'pending'
   visitorToken: string;
   departmentId: string;
   status: VisitorStatus;
   position: number; // position within this visitor's own department, not global
   enteredAt: number; // epoch ms
   agentUrl?: string; // populated when status = 'connected'
+  pending?: PendingInfo; // populated when status = 'pending'
+}
+
+// Pending and queued visitors are both "in line" — they share positions.
+function isWaiting(e: VisitorEntry): boolean {
+  return e.status === 'queued' || e.status === 'pending';
 }
 
 // SSE client: one visitor can have multiple browser tabs
@@ -38,6 +52,14 @@ class QueueState {
       if (entry.status !== 'queued') {
         entry.status = 'queued';
         entry.agentUrl = undefined;
+        entry.pending = undefined;
+      }
+      // A pending entry gets its first roomId here (or a stale one is
+      // replaced) — keep the reverse index pointing at the live room.
+      if (entry.roomId !== roomId) {
+        if (entry.roomId) this.roomIndex.delete(entry.roomId);
+        entry.roomId = roomId;
+        this.roomIndex.set(roomId, visitorToken);
       }
       entry.departmentId = departmentId;
       if (createdAt !== undefined) entry.enteredAt = createdAt;
@@ -58,13 +80,65 @@ class QueueState {
     console.log(`[queue] enqueue  roomId=${roomId} token=${visitorToken} dept=${departmentId} pos=${this.entries.get(visitorToken)?.position}`);
   }
 
+  // Keeps a visitor in line while RC has no agent online to open their room.
+  // Idempotent: a visitor already pending keeps their place (enteredAt), and
+  // one who already has a live entry (queued/connected) isn't touched.
+  addPending(visitorToken: string, departmentId: string, info: PendingInfo): VisitorEntry {
+    const existing = this.entries.get(visitorToken);
+    if (existing && existing.status !== 'closed') {
+      if (existing.status === 'pending') {
+        existing.departmentId = departmentId;
+        if (info.infoagent) existing.pending = { ...existing.pending, infoagent: info.infoagent };
+      }
+      return existing;
+    }
+    const entry: VisitorEntry = {
+      roomId: '',
+      visitorToken,
+      departmentId,
+      status: 'pending',
+      position: 0,
+      enteredAt: Date.now(),
+      pending: info,
+    };
+    this.entries.set(visitorToken, entry);
+    this.recalcPositions();
+    this.broadcastQueueUpdate();
+    console.log(`[queue] pending  token=${visitorToken} dept=${departmentId} pos=${entry.position}`);
+    return entry;
+  }
+
+  // Oldest first, so rooms open in the order visitors got in line.
+  getPendingEntries(): VisitorEntry[] {
+    return [...this.entries.values()]
+      .filter(e => e.status === 'pending')
+      .sort((a, b) => a.enteredAt - b.enteredAt);
+  }
+
+  removePending(visitorToken: string): void {
+    if (this.entries.get(visitorToken)?.status !== 'pending') return;
+    this.entries.delete(visitorToken);
+    this.notifyRemoved(visitorToken);
+    this.recalcPositions();
+    this.broadcastQueueUpdate();
+    console.log(`[queue] pending removed token=${visitorToken}`);
+  }
+
   confirmHumanAgent(roomId: string, visitorToken: string, agentUrl: string): void {
     const token = this.roomIndex.get(roomId) ?? visitorToken;
 
     const entry = this.entries.get(token);
     if (entry) {
+      // A pending entry can get taken before the job promotes it — record
+      // the room so the close webhook can still find (and remove) it.
+      if (entry.roomId !== roomId) {
+        if (entry.roomId) this.roomIndex.delete(entry.roomId);
+        entry.roomId = roomId;
+        this.roomIndex.set(roomId, token);
+      }
       entry.status = 'connected';
       entry.agentUrl = agentUrl;
+      entry.pending = undefined;
       this.recalcPositions();
       this.broadcastQueueUpdate();
     }
@@ -152,7 +226,7 @@ class QueueState {
   getQueuedCount(departmentId: string): number {
     let n = 0;
     for (const e of this.entries.values()) {
-      if (e.status === 'queued' && e.departmentId === departmentId) n++;
+      if (isWaiting(e) && e.departmentId === departmentId) n++;
     }
     return n;
   }
@@ -209,7 +283,7 @@ class QueueState {
   // Broadcast position updates to all queued visitors
   private broadcastQueueUpdate(): void {
     for (const [token, entry] of this.entries.entries()) {
-      if (entry.status !== 'queued') continue;
+      if (!isWaiting(entry)) continue;
       const clients = this.sseClients.get(token);
       if (!clients || clients.size === 0) continue;
       const payload = {
@@ -230,7 +304,7 @@ class QueueState {
   private recalcPositions(): void {
     const byDept = new Map<string, VisitorEntry[]>();
     for (const e of this.entries.values()) {
-      if (e.status !== 'queued') continue;
+      if (!isWaiting(e)) continue;
       const bucket = byDept.get(e.departmentId);
       if (bucket) bucket.push(e); else byDept.set(e.departmentId, [e]);
     }

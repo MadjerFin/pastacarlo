@@ -1,10 +1,16 @@
 import { Router, Request, Response } from 'express';
-import { queueState } from '../services/queueState';
+import { queueState, VisitorStatus } from '../services/queueState';
 import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, fetchOpenRoomForVisitorToken, fetchAgentsOnline } from '../services/rocketchatApi';
 import { buildAgentUrl, buildAppLink, buildEntrarLink } from '../services/links';
 import { botRateLimit } from '../middleware/botRateLimit';
 
 const router = Router();
+
+// 'pending' (in line, room not opened yet for lack of an online agent) is an
+// internal detail — callers see it as 'queued', which is what it is to them.
+function publicStatus(status: VisitorStatus): 'queued' | 'connected' | 'closed' {
+  return status === 'pending' ? 'queued' : status;
+}
 
 // Resolve o link "certo" pro status atual, pra o chamador (bot) não precisar
 // montar URL nenhuma na mão.
@@ -59,7 +65,7 @@ router.get('/room/:roomId', botRateLimit, async (req: Request, res: Response) =>
   // de queda do backend em que rooms.info ainda não foi confirmado.
   const open = rc?.open ?? (entry?.status === 'queued' || entry?.status === 'connected');
   const status: 'queued' | 'connected' | 'closed' =
-    entry?.status ?? (open ? (rc?.servedBy ? 'connected' : 'queued') : 'closed');
+    (entry && publicStatus(entry.status)) ?? (open ? (rc?.servedBy ? 'connected' : 'queued') : 'closed');
   const visitorToken = entry?.visitorToken ?? rc?.visitorToken;
   const link = await resolveStatusLink(status, visitorToken, roomId);
 
@@ -113,15 +119,16 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
   }
 
   const open = entry
-    ? entry.status === 'queued' || entry.status === 'connected'
+    ? entry.status !== 'closed'
     : rc.status !== 'none';
   const status: 'queued' | 'connected' | 'closed' =
-    entry?.status ?? (rc.status === 'none' ? 'closed' : rc.status);
-  const link = await resolveStatusLink(status, token, entry?.roomId ?? rc.roomId ?? null, cleanPhone);
+    (entry && publicStatus(entry.status)) ?? (rc.status === 'none' ? 'closed' : rc.status);
+  const roomId = entry?.roomId || rc.roomId || null;
+  const link = await resolveStatusLink(status, token, roomId, cleanPhone);
 
   res.json({
     ok: true,
-    roomId: entry?.roomId ?? rc.roomId ?? null,
+    roomId,
     open,
     status,
     position: status === 'queued' ? entry?.position ?? null : null,
@@ -157,11 +164,12 @@ router.get('/:visitorToken', (req: Request, res: Response) => {
     return;
   }
 
+  const status = publicStatus(entry.status);
   res.json({
     ok: true,
-    status: entry.status,
-    position: entry.status === 'queued' ? entry.position : null,
-    queueSize: entry.status === 'queued' ? queueState.getQueuedCount(entry.departmentId) : null,
+    status,
+    position: status === 'queued' ? entry.position : null,
+    queueSize: status === 'queued' ? queueState.getQueuedCount(entry.departmentId) : null,
     agentUrl: entry.agentUrl ?? null,
     enteredAt: entry.enteredAt,
   });
@@ -229,7 +237,7 @@ router.get('/stream/:visitorToken', (req: Request, res: Response) => {
   // Send current state from in-memory queue
   const entry = queueState.getEntry(visitorToken);
   if (entry) {
-    if (entry.status === 'queued') {
+    if (entry.status === 'queued' || entry.status === 'pending') {
       send('queue_update', {
         position: entry.position,
         queueSize: queueState.getQueuedCount(entry.departmentId),

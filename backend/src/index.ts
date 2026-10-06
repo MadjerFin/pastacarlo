@@ -7,6 +7,7 @@ import visitorsRouter from './routes/visitors';
 import chatRouter from './routes/chat';
 import { startReconciliationJob } from './services/rocketchatApi';
 import { queueState } from './services/queueState';
+import { startPendingQueueJob } from './services/pendingQueue';
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
@@ -82,4 +83,5 @@ app.get('*', (req, res, next) => {
 app.listen(PORT, () => {
   console.log(`[server] listening on http://localhost:${PORT}`);
   startReconciliationJob();
+  startPendingQueueJob();
 });
