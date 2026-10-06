@@ -85,10 +85,24 @@ async function sendAgentGreeting(
   visitorName: string | undefined,
   agent: RCWebhookPayload['agent'],
 ): Promise<void> {
-  if (greetedRooms.has(roomId)) return;
+  if (greetedRooms.has(roomId)) {
+    console.log(`[webhook] greeting skipped roomId=${roomId}: already greeted`);
+    return;
+  }
 
-  const template = process.env.LIVECHAT_GREETING_MESSAGE ?? DEFAULT_GREETING;
-  if (!template) return; // set LIVECHAT_GREETING_MESSAGE="" to disable
+  // LIVECHAT_WELCOME_MESSAGE was the old on-start message — deployments that
+  // blanked LIVECHAT_GREETING_MESSAGE to avoid two messages still have their
+  // text there, so use it rather than silently sending nothing. Both set to
+  // "" disables the greeting.
+  const greetingEnv = process.env.LIVECHAT_GREETING_MESSAGE;
+  const welcomeEnv = process.env.LIVECHAT_WELCOME_MESSAGE;
+  const template = greetingEnv || welcomeEnv
+    || (greetingEnv === undefined && welcomeEnv === undefined ? DEFAULT_GREETING : '');
+  if (!template) {
+    console.log(`[webhook] greeting skipped roomId=${roomId}: LIVECHAT_GREETING_MESSAGE/LIVECHAT_WELCOME_MESSAGE vazias`);
+    return;
+  }
+  console.log(`[webhook] sending greeting roomId=${roomId} agent=${agent?.username ?? '(sem agent no payload)'}`);
 
   const [name, agentName] = await Promise.all([
     visitorName ?? fetchVisitorInfo(visitorToken).then(v => v?.name),
