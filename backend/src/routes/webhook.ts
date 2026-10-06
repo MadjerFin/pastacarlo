@@ -34,77 +34,95 @@ interface RCWebhookPayload {
   agent?: {
     _id?: string;
     username?: string;
+    name?: string;
     [key: string]: unknown;
   };
 }
 
-const DEFAULT_GREETING = 'Oi, sou da Sapios, como posso te ajudar?';
+const DEFAULT_GREETING = 'Olá {name}! Sou {agent}, da Sapios. Como posso te ajudar?';
 
-// Sends a standard opening message as the agent, right when a chat is taken —
-// so every visitor gets a consistent first response instead of dead air
-// while whoever picked up the chat gets around to typing.
-async function sendGreeting(roomId: string): Promise<void> {
-  const msg = process.env.LIVECHAT_GREETING_MESSAGE ?? DEFAULT_GREETING;
-  if (!msg) return; // set LIVECHAT_GREETING_MESSAGE="" to disable
-  const base = process.env.ROCKETCHAT_URL;
-  try {
-    const res = await fetch(`${base}/api/v1/chat.sendMessage`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Auth-Token': process.env.ROCKETCHAT_ADMIN_TOKEN ?? '',
-        'X-User-Id': process.env.ROCKETCHAT_ADMIN_USER_ID ?? '',
-      },
-      body: JSON.stringify({ message: { rid: roomId, msg } }),
-    });
-    const body = await res.json() as { success?: boolean; error?: string };
-    if (!body.success) console.warn(`[webhook] greeting rejected for roomId=${roomId}:`, body.error);
-  } catch (err) {
-    console.error('[webhook] greeting error:', err);
-  }
+// Rooms a greeting was already sent to — kept until the room closes, separate
+// from the generic 5-min event dedup below (RC's own retry window is short,
+// but we never want two greetings in the same still-open session, e.g. when
+// a chat is transferred and "taken" again by another agent).
+const greetedRooms = new Set<string>();
+
+function rcAdminHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'X-Auth-Token': process.env.ROCKETCHAT_ADMIN_TOKEN ?? '',
+    'X-User-Id': process.env.ROCKETCHAT_ADMIN_USER_ID ?? '',
+  };
 }
 
-const DEFAULT_WELCOME_MESSAGE = 'Olá {name}! Em que posso ajudar?';
+// The webhook's `agent` doesn't always carry a display name — fall back to
+// users.info, then to the username.
+async function resolveAgentName(agent: RCWebhookPayload['agent']): Promise<string | undefined> {
+  if (agent?.name) return agent.name as string;
+  if (agent?._id) {
+    try {
+      const res = await fetch(`${process.env.ROCKETCHAT_URL}/api/v1/users.info?userId=${encodeURIComponent(agent._id)}`, {
+        headers: rcAdminHeaders(),
+      });
+      const body = await res.json() as { user?: { name?: string } };
+      if (body.user?.name) return body.user.name;
+    } catch (err) {
+      console.error('[webhook] users.info error:', err);
+    }
+  }
+  return agent?.username;
+}
 
-// Rooms a welcome message was already sent to — kept until the room closes,
-// separate from the generic 5-min event dedup below (RC's own retry window
-// is short, but we never want two welcomes in the same still-open session).
-const welcomedRooms = new Set<string>();
+// Sends the opening message right when a chat is taken, shown as the agent
+// who took it (name + avatar) instead of the admin account. There's no REST
+// way to post as another user without their credentials, so this posts with
+// the admin token plus `alias`/`avatar` — requires the admin's role to have
+// the "message-impersonate" permission in RC. Without it RC rejects the
+// message and nothing is sent (never falls back to posting as the admin).
+async function sendAgentGreeting(
+  roomId: string,
+  visitorToken: string,
+  visitorName: string | undefined,
+  agent: RCWebhookPayload['agent'],
+): Promise<void> {
+  if (greetedRooms.has(roomId)) return;
 
-// Sends a one-time welcome message as the agent when a livechat session
-// starts. Mirrors sendGreeting's auth/fetch pattern; unlike it, interpolates
-// the visitor's name into a configurable template.
-async function sendWelcomeMessage(roomId: string, visitorToken: string, visitorName: string | undefined): Promise<void> {
-  if (welcomedRooms.has(roomId)) return;
+  const template = process.env.LIVECHAT_GREETING_MESSAGE ?? DEFAULT_GREETING;
+  if (!template) return; // set LIVECHAT_GREETING_MESSAGE="" to disable
 
-  const template = process.env.LIVECHAT_WELCOME_MESSAGE ?? DEFAULT_WELCOME_MESSAGE;
-  if (!template) return; // set LIVECHAT_WELCOME_MESSAGE="" to disable
-
-  const name = visitorName ?? (await fetchVisitorInfo(visitorToken))?.name ?? '';
-  // Collapse the leftover space before punctuation when there's no name
-  // (e.g. "Olá {name}! ..." -> "Olá! ...") instead of leaving "Olá !".
-  const msg = template.replace('{name}', name).replace(/ +([!,.?])/, '$1').trim();
+  const [name, agentName] = await Promise.all([
+    visitorName ?? fetchVisitorInfo(visitorToken).then(v => v?.name),
+    resolveAgentName(agent),
+  ]);
+  // Collapse the leftover space before punctuation when a placeholder is
+  // empty (e.g. "Olá {name}! ..." -> "Olá! ...") instead of leaving "Olá !".
+  const msg = template
+    .replace('{name}', name ?? '')
+    .replace('{agent}', agentName ?? '')
+    .replace(/ +([!,.?])/g, '$1')
+    .trim();
 
   const base = process.env.ROCKETCHAT_URL;
+  const message: Record<string, string> = { rid: roomId, msg };
+  if (agentName) message.alias = agentName;
+  if (agent?.username) message.avatar = `${base}/avatar/${encodeURIComponent(agent.username)}`;
+
   try {
     const res = await fetch(`${base}/api/v1/chat.sendMessage`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Auth-Token': process.env.ROCKETCHAT_ADMIN_TOKEN ?? '',
-        'X-User-Id': process.env.ROCKETCHAT_ADMIN_USER_ID ?? '',
-      },
-      body: JSON.stringify({ message: { rid: roomId, msg } }),
+      headers: rcAdminHeaders(),
+      body: JSON.stringify({ message }),
     });
-    const body = await res.json() as { success?: boolean; error?: string };
+    const body = await res.json() as { success?: boolean; error?: string; errorType?: string };
     if (!body.success) {
-      console.warn(`[webhook] welcome message rejected for roomId=${roomId}:`, body.error);
+      console.warn(`[webhook] greeting rejected for roomId=${roomId}: ${body.errorType ?? ''} ${body.error ?? ''}` +
+        ' — se for "not allowed", dê a permissão "message-impersonate" ao papel do usuário admin na RC');
       return;
     }
-    welcomedRooms.add(roomId);
-    console.log(`[webhook] welcome message sent roomId=${roomId}`);
+    greetedRooms.add(roomId);
+    console.log(`[webhook] greeting sent roomId=${roomId} as="${agentName ?? '?'}"`);
   } catch (err) {
-    console.error('[webhook] welcome message error:', err);
+    console.error('[webhook] greeting error:', err);
   }
 }
 
@@ -146,7 +164,8 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
 
   switch (eventType) {
     case 'LivechatSessionStart':
-      sendWelcomeMessage(roomId, visitorToken, payload.visitor?.name).catch(() => {});
+      // No message here anymore — the greeting goes out on Taken, as the agent
+      // who picked up the chat, instead of as the admin before anyone's there.
       break;
 
     case 'LivechatSessionQueued':
@@ -168,7 +187,7 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
       // Adding &room= was causing "Invalid token" on the livechat page.
       const agentUrl = `${livechatBaseUrl}?token=${encodeURIComponent(visitorToken)}`;
       queueState.confirmHumanAgent(roomId, visitorToken, agentUrl);
-      sendGreeting(roomId).catch(() => {});
+      sendAgentGreeting(roomId, visitorToken, payload.visitor?.name, payload.agent).catch(() => {});
       break;
     }
 
@@ -184,7 +203,7 @@ router.post('/', validateWebhookSecret, (req: Request, res: Response) => {
     case 'LivechatSessionClosed':
     case 'Chat Closed':
       queueState.remove(roomId);
-      welcomedRooms.delete(roomId);
+      greetedRooms.delete(roomId);
       break;
 
     default:

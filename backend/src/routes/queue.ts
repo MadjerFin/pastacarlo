@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { queueState } from '../services/queueState';
-import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, fetchOpenRoomForVisitorToken } from '../services/rocketchatApi';
+import { fetchRoomInfo, findContactTokenByPhone, fetchVisitorInfo, fetchOpenRoomForVisitorToken, fetchAgentsOnline } from '../services/rocketchatApi';
 import { buildAgentUrl, buildAppLink, buildEntrarLink } from '../services/links';
 import { botRateLimit } from '../middleware/botRateLimit';
 
@@ -128,6 +128,23 @@ router.post('/phone', botRateLimit, async (req: Request, res: Response) => {
     queueSize: status === 'queued' && entry ? queueState.getQueuedCount(entry.departmentId) : null,
     link,
   });
+});
+
+// GET /queue/agents-online/:visitorToken — há atendente online no
+// departamento da sala desse visitante? Consultado pela sala de espera pra
+// avisar "no momento não há atendentes online". `online` vem null quando não
+// dá pra saber (a página então não mostra aviso nenhum).
+router.get('/agents-online/:visitorToken', async (req: Request, res: Response) => {
+  const entry = queueState.getEntry(req.params.visitorToken);
+  // The queued webhook doesn't always include the department (seen live:
+  // "dept=" empty) — ask RC for the room's department before falling back
+  // to the global check.
+  let departmentId = entry?.departmentId || undefined;
+  if (!departmentId && entry?.roomId) {
+    departmentId = (await fetchRoomInfo(entry.roomId))?.departmentId;
+  }
+  const online = await fetchAgentsOnline(departmentId);
+  res.json({ ok: true, online });
 });
 
 // GET /queue/:visitorToken — snapshot do status atual

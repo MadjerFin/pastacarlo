@@ -5,6 +5,9 @@ interface RcMessage {
   rid?: string;
   msg: string;
   ts: string;
+  // Display name override — set on the greeting, which the backend posts with
+  // the admin token but under the name of the agent who took the chat.
+  alias?: string;
   u: { _id?: string; username: string; name?: string };
   token?: string;
   attachments?: Array<{
@@ -172,7 +175,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
   const agentName = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
-      if (!isFromVisitor(m)) return m.u.name ?? m.u.username;
+      if (!isFromVisitor(m)) return senderName(m);
     }
     return null;
   }, [messages, isFromVisitor]);
@@ -435,7 +438,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
                     ...(grouped ? {} : mine ? { borderTopRightRadius: 0 } : { borderTopLeftRadius: 0 }),
                   }}>
                     {!mine && !grouped && (
-                      <div style={S.senderName}>{msg.u.name ?? msg.u.username}</div>
+                      <div style={S.senderName}>{senderName(msg)}</div>
                     )}
                     {msg.msg && <p style={S.msgText}>{linkify(msg.msg)}</p>}
                     {msg.attachments?.map((att, ai) => {
@@ -595,9 +598,13 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
   );
 }
 
+function senderName(m: RcMessage) {
+  return m.alias || m.u.name || m.u.username;
+}
+
 function sameSender(a: RcMessage, b: RcMessage, isFromVisitor: (m: RcMessage) => boolean) {
   if (isFromVisitor(a) !== isFromVisitor(b)) return false;
-  if (!isFromVisitor(a) && a.u.username !== b.u.username) return false;
+  if (!isFromVisitor(a) && senderName(a) !== senderName(b)) return false;
   return Math.abs(new Date(b.ts).getTime() - new Date(a.ts).getTime()) < GROUP_WINDOW_MS;
 }
 

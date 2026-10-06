@@ -125,8 +125,9 @@ Frontend recebe "connected"  ──►  redireciona para URL do livechat
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | POST | `/webhooks/rocketchat` | Recebe eventos do Omnichannel |
-| POST | `/visitors/register` `{ name, phone, fila?, infoagent? }` | Abre/reabre a sala do visitante por telefone — protegido por secret (`Authorization: Bearer <token>`), só o bot chama. `infoagent` (texto ou objeto `{ campo: valor }`) vira a primeira mensagem do visitante na sala, só quando a sala é nova |
+| POST | `/visitors/register` `{ name, phone, fila?, infoagent? }` | Abre/reabre a sala do visitante por telefone — protegido por secret (`Authorization: Bearer <token>`), só o bot chama. `infoagent` (texto ou objeto `{ campo: valor }`) vira a primeira mensagem do visitante na sala, só quando a sala é nova. A resposta traz `agentsOnline` (`true`/`false`/`null`) pro bot poder avisar quando não há atendente online |
 | POST | `/visitors/reopen` `{ token }` | Reabre uma sala nova pro visitante que já tem seu próprio token (ex: botão "Iniciar novo atendimento" no chat) — sem secret, pois o token já prova quem é |
+| GET | `/queue/agents-online/:visitorToken` | `{ online }` — há atendente online no departamento da sala? (`null` se não der pra saber). A sala de espera consulta a cada 30s e mostra o aviso "No momento não há atendentes online" |
 | GET | `/queue/:visitorToken` | Snapshot do status atual |
 | GET | `/queue/room/:roomId` | Posição na fila, status (`queued`/`connected`/`closed`) e `link` correspondente, por roomId (consumido pelo bot, rate limit 20 req/min por IP) |
 | POST | `/queue/phone` `{ phone }` | Idem, mas resolvendo o visitante pelo telefone. É POST (telefone no body, não na URL) para não deixar o número em logs de acesso/proxies; rate limit 20 req/min por IP |

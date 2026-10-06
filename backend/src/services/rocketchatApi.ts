@@ -380,6 +380,39 @@ export async function findDepartmentIdByName(name: string): Promise<string | nul
   return null;
 }
 
+// departmentId ('' = no department) -> { online, cachedAt }. Short TTL: the
+// waiting room polls this, and agent availability changes often.
+const agentsOnlineCache = new Map<string, { online: boolean; cachedAt: number }>();
+const AGENTS_ONLINE_CACHE_TTL_MS = 20 * 1000;
+
+// Whether RC considers the livechat "online" for this department — i.e. at
+// least one agent is online and available (and within office hours, if
+// configured). Uses the same public endpoint the RC widget uses to decide
+// between the chat and the offline form. Caveat: if RC's "Accept new
+// omnichannel requests when there are no online agents" setting is on, RC
+// reports online=true regardless. Returns null when it can't be determined,
+// so callers show nothing rather than a wrong "no agents" warning.
+export async function fetchAgentsOnline(departmentId?: string): Promise<boolean | null> {
+  const key = departmentId ?? '';
+  const cached = agentsOnlineCache.get(key);
+  if (cached && Date.now() - cached.cachedAt < AGENTS_ONLINE_CACHE_TTL_MS) return cached.online;
+
+  const base = process.env.ROCKETCHAT_URL;
+  try {
+    const url = new URL(`${base}/api/v1/livechat/config`);
+    if (departmentId) url.searchParams.set('department', departmentId);
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const body = await res.json() as { config?: { online?: boolean }; success?: boolean };
+    if (typeof body.config?.online !== 'boolean') return null;
+    agentsOnlineCache.set(key, { online: body.config.online, cachedAt: Date.now() });
+    return body.config.online;
+  } catch (err) {
+    console.error('[rcapi] fetchAgentsOnline error:', err);
+    return null;
+  }
+}
+
 export async function runReconciliation(): Promise<void> {
   console.log('[rcapi] starting reconciliation...');
   try {

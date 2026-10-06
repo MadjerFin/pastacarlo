@@ -35,6 +35,8 @@ export default function WaitingRoom() {
   const retryCountRef = useRef(0);
   const connectedRef = useRef(false);
   const [reopening, setReopening] = useState(false);
+  // null = unknown (no warning shown); false = RC reports no agent online.
+  const [agentsOnline, setAgentsOnline] = useState<boolean | null>(null);
 
   const params = new URLSearchParams(window.location.search);
   const visitorToken = params.get('token');
@@ -101,6 +103,24 @@ export default function WaitingRoom() {
     };
   }
 
+  // While queued, check every 30s whether any agent is online, to warn the
+  // visitor instead of leaving them waiting without knowing why.
+  useEffect(() => {
+    if (appState !== 'queued' || !visitorToken) return;
+    let cancelled = false;
+    const check = () => {
+      fetch(`/queue/agents-online/${encodeURIComponent(visitorToken)}`)
+        .then(res => res.ok ? res.json() : null)
+        .then((body: { online?: boolean | null } | null) => {
+          if (!cancelled) setAgentsOnline(typeof body?.online === 'boolean' ? body.online : null);
+        })
+        .catch(() => {});
+    };
+    check();
+    const id = setInterval(check, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [appState, visitorToken]);
+
   function cleanup() {
     eventSourceRef.current?.close();
     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
@@ -157,7 +177,7 @@ export default function WaitingRoom() {
     <div style={styles.card}>
       <Logo />
       {appState === 'loading' && <LoadingState connectionError={connectionError} />}
-      {appState === 'queued' && queueData && <QueuedState data={queueData} />}
+      {appState === 'queued' && queueData && <QueuedState data={queueData} agentsOnline={agentsOnline} />}
       {appState === 'connecting' && <ConnectingState />}
       {appState === 'expired' && <ExpiredState reopening={reopening} onReopen={reopenConversation} />}
       {appState === 'error' && <ErrorCard message="Erro inesperado. Por favor, recarregue a página." />}
@@ -190,10 +210,21 @@ function LoadingState({ connectionError }: { connectionError: boolean }) {
   );
 }
 
-function QueuedState({ data }: { data: QueueData }) {
+function QueuedState({ data, agentsOnline }: { data: QueueData; agentsOnline: boolean | null }) {
   const wait = formatWait(data.estimatedWaitSeconds);
   return (
     <div style={styles.stateArea}>
+      {agentsOnline === false && (
+        <div style={styles.offlineNotice} role="status">
+          <span style={styles.offlineDot} />
+          <div>
+            <p style={styles.offlineTitle}>No momento não há atendentes online</p>
+            <p style={styles.offlineText}>
+              Sua solicitação continua na fila e você será atendido assim que um atendente ficar disponível.
+            </p>
+          </div>
+        </div>
+      )}
       <div style={styles.positionBadge}>
         <span style={styles.positionNumber}>{ordinal(data.position)}</span>
         <span style={styles.positionLabel}>na fila</span>
@@ -304,5 +335,16 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999, height: 8, overflow: 'hidden',
   },
   barFill: { height: '100%', background: 'var(--color-primary)', borderRadius: 999, transition: 'width 0.6s ease' },
+  offlineNotice: {
+    display: 'flex', alignItems: 'flex-start', gap: '0.65rem', width: '100%',
+    background: '#FEF3C7', border: '1px solid #FCD34D', borderRadius: 12,
+    padding: '0.85rem 1rem', textAlign: 'left',
+  },
+  offlineDot: {
+    width: 10, height: 10, borderRadius: '50%', background: '#F59E0B',
+    flexShrink: 0, marginTop: '0.35rem',
+  },
+  offlineTitle: { fontSize: '0.9rem', fontWeight: 600, color: '#92400E', lineHeight: 1.4 },
+  offlineText: { fontSize: '0.8rem', color: '#92400E', lineHeight: 1.45, marginTop: '0.15rem', opacity: 0.9 },
   barLabel: { fontSize: '0.75rem', color: 'var(--color-muted)', textAlign: 'center', marginTop: 8 },
 };

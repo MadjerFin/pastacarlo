@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
-import { findContactTokenByPhone, findDepartmentIdByName, fetchVisitorInfo } from '../services/rocketchatApi';
+import { findContactTokenByPhone, findDepartmentIdByName, fetchVisitorInfo, fetchAgentsOnline } from '../services/rocketchatApi';
 import { buildAppLink } from '../services/links';
 import { requireBotSecret } from '../middleware/requireBotSecret';
 
@@ -139,8 +139,12 @@ router.post('/register', requireBotSecret, async (req: Request, res: Response) =
       await sendInfoAgent(confirmedToken, roomId, infoMsg);
     }
 
+    // Lets the bot warn the visitor on WhatsApp too ("no momento não há
+    // atendentes online") — null when RC's status couldn't be read.
+    const agentsOnline = await fetchAgentsOnline(departmentId);
+
     const link = buildAppLink(confirmedToken, roomId || undefined, name, cleanPhone);
-    res.json({ ok: true, token: confirmedToken, roomId, link });
+    res.json({ ok: true, token: confirmedToken, roomId, link, agentsOnline });
   } catch (err) {
     console.error('[visitors] register error:', err);
     res.status(500).json({ ok: false, error: 'Erro ao registrar visitante' });
