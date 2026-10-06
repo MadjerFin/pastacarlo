@@ -46,6 +46,23 @@ body.rc-chat-active #root {
   max-width: 100%;
 }
 
+/* Chat próprio (ChatRoom) — tela cheia, sem o card centralizado da sala de espera */
+body.chat-active {
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  background: #d9dbd5;
+}
+
+body.chat-active #root {
+  max-width: 100%;
+}
+
+.chat-input::placeholder { color: #8696a0; }
+.chat-icon-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
+.chat-icon-btn:disabled { cursor: default; opacity: 0.45; }
+.chat-link { color: #027eb5; text-decoration: underline; overflow-wrap: anywhere; }
+
 /* Força o iframe do widget RC a ocupar tela inteira */
 body.rc-chat-active #rocketchat-iframe {
   position: fixed !important;
