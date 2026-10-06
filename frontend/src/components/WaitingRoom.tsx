@@ -37,6 +37,7 @@ export default function WaitingRoom() {
   const [reopening, setReopening] = useState(false);
   // null = unknown (no warning shown); false = RC reports no agent online.
   const [agentsOnline, setAgentsOnline] = useState<boolean | null>(null);
+  const [noAgentOnline, setNoAgentOnline] = useState(false);
 
   const params = new URLSearchParams(window.location.search);
   const visitorToken = params.get('token');
@@ -129,15 +130,21 @@ export default function WaitingRoom() {
   async function reopenConversation() {
     if (!visitorToken) return;
     setReopening(true);
+    setNoAgentOnline(false);
     try {
       const res = await fetch('/visitors/reopen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: visitorToken }),
       });
-      const data = await res.json() as { ok: boolean; link?: string };
+      const data = await res.json() as { ok: boolean; link?: string; error?: string };
       if (data.ok && data.link) {
         window.location.href = data.link;
+        return;
+      }
+      if (data.error === 'no_agent_online') {
+        setReopening(false);
+        setNoAgentOnline(true);
         return;
       }
     } catch {
@@ -179,7 +186,7 @@ export default function WaitingRoom() {
       {appState === 'loading' && <LoadingState connectionError={connectionError} />}
       {appState === 'queued' && queueData && <QueuedState data={queueData} agentsOnline={agentsOnline} />}
       {appState === 'connecting' && <ConnectingState />}
-      {appState === 'expired' && <ExpiredState reopening={reopening} onReopen={reopenConversation} />}
+      {appState === 'expired' && <ExpiredState reopening={reopening} noAgentOnline={noAgentOnline} onReopen={reopenConversation} />}
       {appState === 'error' && <ErrorCard message="Erro inesperado. Por favor, recarregue a página." />}
     </div>
   );
@@ -241,11 +248,20 @@ function QueuedState({ data, agentsOnline }: { data: QueueData; agentsOnline: bo
   );
 }
 
-function ExpiredState({ reopening, onReopen }: { reopening: boolean; onReopen: () => void }) {
+function ExpiredState({ reopening, noAgentOnline, onReopen }: { reopening: boolean; noAgentOnline: boolean; onReopen: () => void }) {
   return (
     <div style={styles.stateArea}>
       <div style={{ fontSize: '2rem' }}>⏱️</div>
       <p style={styles.primaryText}>Este atendimento não está mais ativo.</p>
+      {noAgentOnline && (
+        <div style={styles.offlineNotice} role="status">
+          <span style={styles.offlineDot} />
+          <div>
+            <p style={styles.offlineTitle}>No momento não há atendentes online</p>
+            <p style={styles.offlineText}>Tente novamente em alguns minutos.</p>
+          </div>
+        </div>
+      )}
       <button
         type="button"
         onClick={onReopen}
@@ -256,7 +272,7 @@ function ExpiredState({ reopening, onReopen }: { reopening: boolean; onReopen: (
           fontWeight: 600, cursor: reopening ? 'default' : 'pointer', opacity: reopening ? 0.6 : 1,
         }}
       >
-        {reopening ? 'Abrindo...' : 'Iniciar novo atendimento'}
+        {reopening ? 'Verificando...' : noAgentOnline ? 'Tentar novamente' : 'Iniciar novo atendimento'}
       </button>
     </div>
   );

@@ -35,15 +35,15 @@ async function registerVisitor(name: string | undefined, phone: string, token: s
   return returned;
 }
 
-async function openRoom(visitorToken: string): Promise<{ roomId: string; newRoom: boolean }> {
+async function openRoom(visitorToken: string): Promise<{ roomId: string; newRoom: boolean; errorType?: string }> {
   const base = process.env.ROCKETCHAT_URL;
   const url = `${base}/api/v1/livechat/room?token=${encodeURIComponent(visitorToken)}`;
   const res = await fetch(url);
-  const body = await res.json() as { room?: { _id?: string }; newRoom?: boolean; success?: boolean; error?: string };
+  const body = await res.json() as { room?: { _id?: string }; newRoom?: boolean; success?: boolean; error?: string; errorType?: string };
   console.log(`[visitors] openRoom raw:`, JSON.stringify(body).slice(0, 200));
   // RC sends `newRoom: false` when it resumed an already-open room. Treat a
   // missing flag as new, so older RC versions still get the infoagent message.
-  return { roomId: body.room?._id ?? '', newRoom: body.newRoom !== false };
+  return { roomId: body.room?._id ?? '', newRoom: body.newRoom !== false, errorType: body.errorType };
 }
 
 const INFOAGENT_MAX_LENGTH = 4000;
@@ -130,7 +130,17 @@ router.post('/register', requireBotSecret, async (req: Request, res: Response) =
     const confirmedToken = await registerVisitor(name, cleanPhone, tokenToUse, departmentId);
 
     // 4. Open (or reopen) the livechat room in the resolved department
-    const { roomId, newRoom } = await openRoom(confirmedToken);
+    const { roomId, newRoom, errorType } = await openRoom(confirmedToken);
+
+    // RC refuses to create a room when no agent is online (unless it's set to
+    // accept chats without agents). Answer that explicitly instead of a
+    // success without a room — that sent the visitor to a page with nothing
+    // to wait on, whose "Iniciar novo atendimento" just looped.
+    if (!roomId && errorType === 'no-agent-online') {
+      console.log(`[visitors] no agent online — room not opened token=${confirmedToken.slice(0, 12)}...`);
+      res.status(503).json({ ok: false, error: 'no_agent_online', agentsOnline: false });
+      return;
+    }
     console.log(`[visitors] room opened roomId=${roomId} new=${newRoom} token=${confirmedToken.slice(0, 12)}...`);
 
     // 5. Post the bot's collected data as the visitor's first message
@@ -171,7 +181,12 @@ router.post('/reopen', async (req: Request, res: Response) => {
       return;
     }
 
-    const { roomId } = await openRoom(token);
+    const { roomId, errorType } = await openRoom(token);
+    if (!roomId && errorType === 'no-agent-online') {
+      console.log(`[visitors] no agent online — room not reopened token=${token.slice(0, 12)}...`);
+      res.status(503).json({ ok: false, error: 'no_agent_online' });
+      return;
+    }
     console.log(`[visitors] reopened roomId=${roomId} token=${token.slice(0, 12)}...`);
 
     const link = buildAppLink(token, roomId || undefined, info.name, info.phone);

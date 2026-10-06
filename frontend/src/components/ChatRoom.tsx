@@ -60,6 +60,7 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
   const [roomClosed, setRoomClosed] = useState(false);
   const [closing, setClosing] = useState(false);
   const [reopening, setReopening] = useState(false);
+  const [noAgentOnline, setNoAgentOnline] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [hasNewBelow, setHasNewBelow] = useState(false);
@@ -320,15 +321,22 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
 
   async function reopenConversation() {
     setReopening(true);
+    setNoAgentOnline(false);
     try {
       const res = await fetch('/visitors/reopen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: visitorToken }),
       });
-      const data = await res.json() as { ok: boolean; link?: string };
+      const data = await res.json() as { ok: boolean; link?: string; error?: string };
       if (data.ok && data.link) {
         window.location.href = data.link;
+        return;
+      }
+      // RC won't open a room with nobody online — say so here instead of
+      // reloading into this same closed conversation.
+      if (data.error === 'no_agent_online') {
+        setNoAgentOnline(true);
         return;
       }
       window.location.reload();
@@ -519,14 +527,21 @@ export default function ChatRoom({ visitorToken, roomId, visitorName, rcUrl }: P
       {/* Sala encerrada — bloqueia o envio e oferece iniciar um novo atendimento */}
       {roomClosed ? (
         <div style={S.closedBar}>
-          <span>Esta conversa foi encerrada.</span>
+          {noAgentOnline ? (
+            <div style={S.offlineNotice} role="status">
+              <strong style={{ display: 'block', marginBottom: '0.15rem' }}>No momento não há atendentes online</strong>
+              Tente novamente em alguns minutos.
+            </div>
+          ) : (
+            <span>Esta conversa foi encerrada.</span>
+          )}
           <button
             type="button"
             style={{ ...S.reopenBtn, opacity: reopening ? 0.6 : 1 }}
             disabled={reopening}
             onClick={reopenConversation}
           >
-            {reopening ? 'Abrindo...' : 'Iniciar novo atendimento'}
+            {reopening ? 'Verificando...' : noAgentOnline ? 'Tentar novamente' : 'Iniciar novo atendimento'}
           </button>
         </div>
       ) : recording ? (
@@ -785,6 +800,10 @@ const S: Record<string, React.CSSProperties> = {
     background: '#F0F2F5', color: '#54656f', borderTop: '1px solid #e2e8f0',
     padding: '0.85rem 1rem calc(0.85rem + env(safe-area-inset-bottom))', fontSize: '0.85rem',
     textAlign: 'center', flexShrink: 0,
+  },
+  offlineNotice: {
+    width: '100%', maxWidth: 420, background: '#FEF3C7', border: '1px solid #FCD34D',
+    color: '#92400E', borderRadius: 10, padding: '0.6rem 0.85rem', fontSize: '0.82rem', lineHeight: 1.45,
   },
   reopenBtn: {
     background: '#075E54', color: '#fff', border: 'none',
